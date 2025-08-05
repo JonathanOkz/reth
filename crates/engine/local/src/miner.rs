@@ -196,6 +196,12 @@ where
 
         let block = payload.block();
 
+        // Skip mining when block would contain zero transactions (dev --auto-mine empty tick)
+        if block.body().transaction_count() == 0 {
+            // nothing to mine yet
+            return Ok(());
+        }
+
         let payload = T::block_to_payload(payload.block().clone());
         let res = self.to_engine.new_payload(payload).await?;
 

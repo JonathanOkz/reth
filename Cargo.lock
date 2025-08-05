@@ -7911,6 +7911,7 @@ dependencies = [
  "reth-optimism-chainspec",
  "reth-payload-builder",
  "reth-payload-primitives",
+ "reth-primitives-traits",
  "reth-provider",
  "reth-transaction-pool",
  "tokio",

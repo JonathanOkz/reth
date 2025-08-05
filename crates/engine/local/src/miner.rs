@@ -19,6 +19,7 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 use tokio::time::Interval;
+use reth_primitives_traits::block::body::BlockBody;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::error;
 

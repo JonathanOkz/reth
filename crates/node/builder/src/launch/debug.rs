@@ -176,17 +176,20 @@ where
             let blockchain_db = handle.node.provider.clone();
             let chain_spec = config.chain.clone();
             let beacon_engine_handle = handle.node.add_ons_handle.beacon_engine_handle.clone();
-            let pool = handle.node.pool.clone();
+            let miner_pool = handle.node.pool.clone();
             let payload_builder_handle = handle.node.payload_builder_handle.clone();
 
-            let dev_mining_mode = handle.node.config.dev_mining_mode(pool);
+            let dev_mining_mode = handle.node.config.dev_mining_mode(miner_pool.clone());
             handle.node.task_executor.spawn_critical("local engine", async move {
+                // TODO: wire CLI mining args via config if needed
                 LocalMiner::new(
                     blockchain_db,
                     N::Types::local_payload_attributes_builder(&chain_spec),
                     beacon_engine_handle,
                     dev_mining_mode,
                     payload_builder_handle,
+                    miner_pool.clone(),
+                    80,
                 )
                 .run()
                 .await

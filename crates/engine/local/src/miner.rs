@@ -12,16 +12,10 @@ use reth_payload_primitives::{
 };
 use reth_provider::BlockReader;
 use reth_transaction_pool::TransactionPool;
-use std::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-    time::{Duration, UNIX_EPOCH},
-};
-use tokio::time::Interval;
+use std::time::{Duration, UNIX_EPOCH};
 use reth_primitives_traits::block::body::BlockBody;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::error;
+use tracing::{error, warn};
 
 /// A mining mode for the local dev engine.
 #[derive(Debug)]
@@ -29,8 +23,6 @@ pub enum MiningMode {
     /// In this mode a block is built as soon as
     /// a valid transaction reaches the pool.
     Instant(Fuse<ReceiverStream<TxHash>>),
-    /// In this mode a block is built at a fixed interval.
-    Interval(Interval),
 }
 
 impl MiningMode {
@@ -40,31 +32,17 @@ impl MiningMode {
         Self::Instant(ReceiverStream::new(rx).fuse())
     }
 
-    /// Constructor for a [`MiningMode::Interval`]
-    pub fn interval(duration: Duration) -> Self {
-        let start = tokio::time::Instant::now() + duration;
-        Self::Interval(tokio::time::interval_at(start, duration))
-    }
 }
 
-impl Future for MiningMode {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        match this {
+impl MiningMode {
+    /// Wait until the next mining trigger (tx arrival or interval tick).
+    pub async fn wait(&mut self) {
+        match self {
             Self::Instant(rx) => {
-                // drain all transactions notifications
-                if let Poll::Ready(Some(_)) = rx.poll_next_unpin(cx) {
-                    return Poll::Ready(())
+                // If the stream finished (pool listener closed), fall back to a short sleep.
+                if rx.next().await.is_none() {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                Poll::Pending
-            }
-            Self::Interval(interval) => {
-                if interval.poll_tick(cx).is_ready() {
-                    return Poll::Ready(())
-                }
-                Poll::Pending
             }
         }
     }
@@ -72,7 +50,15 @@ impl Future for MiningMode {
 
 /// Local miner advancing the chain
 #[derive(Debug)]
-pub struct LocalMiner<T: PayloadTypes, B> {
+pub struct LocalMiner<T: PayloadTypes, B, P, R>
+where
+    P: TransactionPool,
+    R: BlockReader,
+{
+    /// Blockchain data provider for latest headers
+    provider: R,
+    /// The transaction pool
+    pool: P,
     /// The payload attribute builder for the engine
     payload_attributes_builder: B,
     /// Sender for events to engine.
@@ -81,35 +67,82 @@ pub struct LocalMiner<T: PayloadTypes, B> {
     mode: MiningMode,
     /// The payload builder for the engine
     payload_builder: PayloadBuilderHandle<T>,
+    /// Target gas percentage to fill blocks under sustained load
+    target_gas_percentage: u8,
+    /// Tracks pending transactions between mining decisions
+    last_pending_txs: usize,
     /// Timestamp for the next block.
     last_timestamp: u64,
     /// Stores latest mined blocks.
     last_block_hashes: Vec<B256>,
+    /// Consecutive errors when advancing the chain – used for exponential back-off.
+    consecutive_errors: u8,
 }
 
-impl<T, B> LocalMiner<T, B>
+impl<T, B, P, R> LocalMiner<T, B, P, R>
 where
     T: PayloadTypes,
     B: PayloadAttributesBuilder<<T as PayloadTypes>::PayloadAttributes>,
+    P: TransactionPool,
+    R: BlockReader,
 {
     /// Spawns a new [`LocalMiner`] with the given parameters.
     pub fn new(
-        provider: impl BlockReader,
+        provider: R,
         payload_attributes_builder: B,
         to_engine: BeaconConsensusEngineHandle<T>,
         mode: MiningMode,
         payload_builder: PayloadBuilderHandle<T>,
+        pool: P,
+        target_gas_percentage: u8,
     ) -> Self {
-        let latest_header =
-            provider.sealed_header(provider.best_block_number().unwrap()).unwrap().unwrap();
+        // Try to fetch the latest sealed header for initial state. If unavailable, fall back to
+        // genesis-like defaults instead of panicking.
+        let (last_timestamp, last_block_hashes) = match provider
+            .best_block_number()
+            .and_then(|num| provider.sealed_header(num))
+        {
+            Ok(Some(header)) => (header.timestamp(), vec![header.hash()]),
+            Ok(None) => {
+                warn!(target: "engine::local", "No header found for best block – starting with empty state");
+                let genesis_hash = provider
+                    .sealed_header(0)
+                    .ok()
+                    .flatten()
+                    .map(|h| h.hash())
+                    .unwrap_or_else(|| {
+                        warn!(target: "engine::local", "Could not fetch genesis header; using B256::ZERO");
+                        B256::ZERO
+                    });
+                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), vec![genesis_hash])
+            }
+            Err(err) => {
+                warn!(target: "engine::local", ?err, "Error fetching best header – starting with empty state");
+                let genesis_hash = provider
+                    .sealed_header(0)
+                    .ok()
+                    .flatten()
+                    .map(|h| h.hash())
+                    .unwrap_or_else(|| {
+                        warn!(target: "engine::local", "Could not fetch genesis header; using B256::ZERO");
+                        B256::ZERO
+                    });
+                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), vec![genesis_hash])
+            }
+        };
 
         Self {
+            provider,
+            pool,
+            target_gas_percentage: target_gas_percentage.clamp(1, 100),
+            last_pending_txs: 0,
             payload_attributes_builder,
             to_engine,
             mode,
             payload_builder,
-            last_timestamp: latest_header.timestamp(),
-            last_block_hashes: vec![latest_header.hash()],
+            last_timestamp,
+            last_block_hashes,
+            consecutive_errors: 0,
         }
     }
 
@@ -119,9 +152,62 @@ where
         loop {
             tokio::select! {
                 // Wait for the interval or the pool to receive a transaction
-                _ = &mut self.mode => {
-                    if let Err(e) = self.advance().await {
-                        error!(target: "engine::local", "Error advancing the chain: {:?}", e);
+                _ = self.mode.wait() => {
+                    let pending = self.pool.pool_size().pending;
+                    // fetch latest gas limit each loop – avoid panicking on errors
+                    let latest_header = match self
+                        .provider
+                        .best_block_number()
+                        .and_then(|num| self.provider.sealed_header(num))
+                    {
+                        Ok(Some(h)) => h,
+                        Ok(None) => {
+                            warn!(target: "engine::local", "No header for best block – skipping mining decision");
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!(target: "engine::local", ?err, "Error fetching best header – skipping mining decision");
+                            continue;
+                        }
+                    };
+                    let gas_limit = latest_header.gas_limit();
+
+                    let should_mine = {
+                        if pending == 0 {
+                            false
+                        } else if self.last_pending_txs == 0 {
+                            // Premier tx après minage précédent → mine tout de suite.
+                            true
+                        } else {
+                            // Charge continue : on attend jusqu’à remplir le bloc au seuil cible.
+                            let txs = self.pool.pending_transactions();
+                            if txs.is_empty() {
+                                false // cas théorique, mais soyons prudents
+                            } else {
+                                // Overflow safe addition on 128-bit.
+                                let total_gas: u128 = txs
+                                    .iter()
+                                    .fold(0u128, |acc, tx| acc.saturating_add(tx.gas_limit() as u128));
+                                total_gas >= (gas_limit as u128 * self.target_gas_percentage as u128 / 100)
+                            }
+                        }
+                    };
+
+                    if should_mine {
+                        if let Err(e) = self.advance().await {
+                            error!(target: "engine::local", "Error advancing the chain: {:?}", e);
+                            // Increment error counter and apply exponential back-off (capped at ~6.4s)
+                            self.consecutive_errors = self.consecutive_errors.saturating_add(1);
+                            let backoff_ms = (1u64 << self.consecutive_errors.min(6)) * 100; // 100ms,200ms,400ms,…,6400ms
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        } else {
+                            // Success – reset error counter
+                            self.consecutive_errors = 0;
+                        }
+                        // reset counter after mining attempt
+                        self.last_pending_txs = 0;
+                    } else {
+                        self.last_pending_txs = pending;
                     }
                 }
                 // send FCU once in a while
@@ -137,15 +223,15 @@ where
     /// Returns current forkchoice state.
     fn forkchoice_state(&self) -> ForkchoiceState {
         ForkchoiceState {
-            head_block_hash: *self.last_block_hashes.last().expect("at least 1 block exists"),
+            head_block_hash: *self.last_block_hashes.last().unwrap_or(&B256::ZERO),
             safe_block_hash: *self
                 .last_block_hashes
                 .get(self.last_block_hashes.len().saturating_sub(32))
-                .expect("at least 1 block exists"),
+                .unwrap_or(&B256::ZERO),
             finalized_block_hash: *self
                 .last_block_hashes
                 .get(self.last_block_hashes.len().saturating_sub(64))
-                .expect("at least 1 block exists"),
+                .unwrap_or(&B256::ZERO),
         }
     }
 
@@ -170,7 +256,7 @@ where
             self.last_timestamp + 1,
             std::time::SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("cannot be earlier than UNIX_EPOCH")
+                .unwrap_or_default()
                 .as_secs(),
         );
 
@@ -189,8 +275,17 @@ where
 
         let payload_id = res.payload_id.ok_or_eyre("No payload id")?;
 
+        // Timeout proportionnel à la taille du pool : 2 s de base + 1 s par tranche de 500 tx,
+        // capé entre 2 s et 30 s.
+        let pending = self.pool.pool_size().pending as u64;
+        let timeout_secs = (2 + pending / 500).clamp(2, 30);
+
         let Some(Ok(payload)) =
-            self.payload_builder.resolve_kind(payload_id, PayloadKind::WaitForPending).await
+            tokio::time::timeout(Duration::from_secs(timeout_secs),
+                self.payload_builder.resolve_kind(payload_id, PayloadKind::WaitForPending))
+                .await
+                .ok()
+                .flatten()
         else {
             eyre::bail!("No payload")
         };

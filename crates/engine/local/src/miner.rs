@@ -5,8 +5,7 @@ use alloy_primitives::{TxHash, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use eyre::OptionExt;
 use futures_util::{stream::Fuse, StreamExt};
-use clap::ValueEnum;
-use std::time::Instant;
+use std::time::{Duration, UNIX_EPOCH};
 use reth_engine_primitives::BeaconConsensusEngineHandle;
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{
@@ -15,21 +14,11 @@ use reth_payload_primitives::{
 use reth_provider::BlockReader;
 use reth_transaction_pool::TransactionPool;
 use reth_primitives_traits::block::body::BlockBody;
-use std::time::{Duration, UNIX_EPOCH};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{error, warn};
+use tracing::{debug, error, info, warn};
 
 /// A mining mode for the local dev engine.
 /// Algorithm used to decide when to mine.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum ValidationMode {
-    /// Original behaviour: mine immediately after first tx or when target gas % reached.
-    Legacy,
-    /// Adaptive EWMA fill ratio controller.
-    Ewma,
-    /// Rate-based countdown using tx/s.
-    Rate,
-}
 
 /// Mining trigger mode used by `LocalMiner` to wait for transactions before building a block.
 /// Currently only `Instant` is supported, which wakes as soon as a new pending transaction arrives.
@@ -70,8 +59,8 @@ where
     P: TransactionPool,
     R: BlockReader,
 {
-    /// Blockchain data provider for latest headers
-    provider: R,
+    /// Blockchain data provider for latest headers (currently unused but kept for future enhancements)
+    _provider: R,
     /// The transaction pool
     pool: P,
     /// The payload attribute builder for the engine
@@ -82,27 +71,16 @@ where
     mode: MiningMode,
     /// The payload builder for the engine
     payload_builder: PayloadBuilderHandle<T>,
-    /// Target gas percentage to fill blocks under sustained load
-    target_gas_percentage: u8,
-    /// Tracks pending transactions between mining decisions
-    last_pending_txs: usize,
+    /// Pending tx count threshold to switch to burst mining mode.
+    burst_threshold: usize,
+    /// Interval in milliseconds to mine blocks when above threshold.
+    burst_interval_ms: u64,
     /// Timestamp for the next block.
     last_timestamp: u64,
     /// Stores latest mined blocks.
     last_block_hashes: Vec<B256>,
     /// Consecutive errors when advancing the chain – used for exponential back-off.
     consecutive_errors: u8,
-    /// Algorithm selection.
-    validation_mode: ValidationMode,
-    /// Timestamp of first pending transaction.
-    first_pending_ts: Option<Instant>,
-    /// EWMA of previous block fill (0.0-1.0).
-    ewma_fill: f64,
-    /// Dynamic wait (ms) for EWMA controller.
-    dynamic_wait_ms: u64,
-    /// Sliding window tx counter for rate calculation.
-    tx_since_last: u64,
-    last_rate_ts: Instant,
 }
 
 impl<T, B, P, R> LocalMiner<T, B, P, R>
@@ -120,8 +98,8 @@ where
         mode: MiningMode,
         payload_builder: PayloadBuilderHandle<T>,
         pool: P,
-        target_gas_percentage: u8,
-        validation_mode: ValidationMode,
+        burst_threshold: usize,
+        burst_interval_ms: u64,
     ) -> Self {
         // Try to fetch the latest sealed header for initial state. If unavailable, fall back to
         // genesis-like defaults instead of panicking.
@@ -159,10 +137,10 @@ where
         };
 
         Self {
-            provider,
+            _provider: provider,
             pool,
-            target_gas_percentage: target_gas_percentage.clamp(1, 100),
-            last_pending_txs: 0,
+            burst_threshold,
+            burst_interval_ms,
             payload_attributes_builder,
             to_engine,
             mode,
@@ -170,68 +148,122 @@ where
             last_timestamp,
             last_block_hashes,
             consecutive_errors: 0,
-            validation_mode,
-            first_pending_ts: None,
-            ewma_fill: 0.0,
-            dynamic_wait_ms: 100,
-            tx_since_last: 0,
-            last_rate_ts: Instant::now(),
         }
     }
 
     /// Runs the [`LocalMiner`] in a loop, polling the miner and building payloads.
+    /// Handle errors during `advance` with back-off and state reset.
+    async fn handle_error(&mut self) {
+        self.consecutive_errors = self.consecutive_errors.saturating_add(1);
+        
+        // If too many consecutive errors, panic to restart the service
+        if self.consecutive_errors > 10 {
+            panic!("LocalMiner: Too many consecutive errors ({}), shutting down", self.consecutive_errors);
+        }
+        
+        // Exponential backoff with max cap at 30 seconds
+        let wait_time = Duration::from_millis(
+            100u64.saturating_mul(2u64.saturating_pow(self.consecutive_errors.min(10) as u32))
+        );
+        let capped_wait = std::cmp::min(wait_time, Duration::from_secs(30));
+        
+        warn!(
+            target: "engine::local",
+            "Error #{}, waiting {:?} before retry",
+            self.consecutive_errors,
+            capped_wait
+        );
+        
+        tokio::time::sleep(capped_wait).await;
+    }
+
+    /// Reset adaptive state after a successful block.
+    fn reset_state_after_success(&mut self) {
+        self.consecutive_errors = 0;
+
+    }
+
+    /// Main event loop of the miner.
+    ///
+    /// The loop waits on three asynchronous sources:
+    /// 1. `self.mode.wait()` – wakes up on new pending transactions (instant mode).
+    /// 2. `burst_interval.tick()` – periodic timer used when the pool is above `burst_threshold`.
+    /// 3. `fcu_interval.tick()` – periodic fork-choice update to keep the engine in sync.
+    ///
+    /// It applies basic rate-limiting (`min_mine_interval`) to avoid building blocks too
+    /// frequently under noisy transaction spam and uses [`Self::handle_error`] with an
+    /// exponential back-off strategy to recover from engine failures.  The function never
+    /// returns under normal operation – it will panic only after `consecutive_errors > 10`,
+    /// signalling that a supervising process should restart the node.
     pub async fn run(mut self) {
+        let burst_threshold = self.burst_threshold;
+        
+        // Ensure burst_interval_ms is at least 100ms to prevent CPU issues
+        let interval_ms = std::cmp::max(self.burst_interval_ms, 100);
+        let mut burst_interval = tokio::time::interval(Duration::from_millis(interval_ms));
+        burst_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        
         let mut fcu_interval = tokio::time::interval(Duration::from_secs(1));
+        fcu_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        
+        // Track last mining attempt to prevent race conditions
+        let mut last_mine_attempt = std::time::Instant::now();
+        let min_mine_interval = Duration::from_millis(50); // Minimum 50ms between mining attempts
+        
+        info!(
+            target: "engine::local",
+            "LocalMiner started with burst_threshold={}, burst_interval={}ms",
+            burst_threshold,
+            interval_ms
+        );
+        
         loop {
             tokio::select! {
-                // Wait for the interval or the pool to receive a transaction
+                // Triggered on every new pending tx (instant mode)
                 _ = self.mode.wait() => {
                     let pending = self.pool.pool_size().pending;
-                    // fetch latest gas limit each loop – avoid panicking on errors
-                    let latest_header = match self
-                        .provider
-                        .best_block_number()
-                        .and_then(|num| self.provider.sealed_header(num))
-                    {
-                        Ok(Some(h)) => h,
-                        Ok(None) => {
-                            warn!(target: "engine::local", "No header for best block – skipping mining decision");
-                            continue;
-                        }
-                        Err(err) => {
-                            warn!(target: "engine::local", ?err, "Error fetching best header – skipping mining decision");
-                            continue;
-                        }
-                    };
-
-                    let gas_limit = latest_header.gas_limit();
-
-                    // Estimate total gas instead of iterating over every pending tx to save CPU.
-                                                            let should_mine = self.decide_should_mine(pending, gas_limit);
-
-
-
-                    if should_mine {
+                    
+                    // Prevent mining too frequently
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_mine_attempt) < min_mine_interval {
+                        continue;
+                    }
+                    
+                    // Only mine in instant mode if below burst threshold
+                    if pending > 0 && pending < burst_threshold {
+                        last_mine_attempt = now;
+                        
+                        // Mine immediately with whatever is pending (fast path)
                         if let Err(e) = self.advance().await {
                             error!(target: "engine::local", "Error advancing the chain: {:?}", e);
-                            // Increment error counter and apply exponential back-off (capped at ~6.4s)
-                            self.consecutive_errors = self.consecutive_errors.saturating_add(1);
-                            // Reset adaptive timers/counters to avoid stale state
-                            self.first_pending_ts = None;
-                            self.tx_since_last = 0;
-                            self.last_rate_ts = Instant::now();
-                            let backoff_ms = (1u64 << self.consecutive_errors.min(6)) * 100; // 100ms,200ms,400ms,…,6400ms
-                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            self.handle_error().await;
                         } else {
-                            // Successful mining — reset error counter and adaptive state
-                            self.consecutive_errors = 0;
-                            self.first_pending_ts = None;
-                            self.tx_since_last = 0;
-                            self.last_rate_ts = Instant::now();
-                            self.last_pending_txs = 0;
+                            self.reset_state_after_success();
                         }
-                    } else {
-                        self.last_pending_txs = pending;
+                    }
+                    // If pending >= burst_threshold, let burst interval handle it
+                }
+                // Burst mining interval - for high transaction loads
+                _ = burst_interval.tick() => {
+                    let pending = self.pool.pool_size().pending;
+                    
+                    // Only mine if we have enough transactions for burst mode
+                    if pending >= burst_threshold {
+                        last_mine_attempt = std::time::Instant::now();
+                        
+                        if let Err(e) = self.advance().await {
+                            error!(target: "engine::local", "Error advancing the chain (burst): {:?}", e);
+                            self.handle_error().await;
+                        } else {
+                            self.reset_state_after_success();
+                            
+                            // Log successful burst mining
+                            info!(
+                                target: "engine::local",
+                                "Burst mined block with {} pending transactions",
+                                pending
+                            );
+                        }
                     }
                 }
                 // send FCU once in a while
@@ -273,83 +305,30 @@ where
         Ok(())
     }
 
-    /// Generates payload attributes for a new block, passes them to FCU and inserts built payload
-    /// through newPayload.
-    /// Decide whether we should mine a block according to selected mode.
-    fn decide_should_mine(&mut self, pending: usize, gas_limit: u64) -> bool {
-        // Heuristic: assume the intrinsic cost (≈21 000 gas) per transaction to estimate fill for EWMA/Rate modes.
-        let total_gas: u128 = pending as u128 * 21_000;
-        match self.validation_mode {
-            ValidationMode::Legacy => {
-                if pending == 0 {
-                    false
-                } else if self.last_pending_txs == 0 {
-                    true
-                } else {
-                    total_gas == 0 || total_gas >= (gas_limit as u128 * self.target_gas_percentage as u128 / 100)
-                }
-            }
-            ValidationMode::Ewma => {
-                if pending == 0 {
-                    self.first_pending_ts = None;
-                    return false;
-                }
-                let now = Instant::now();
-                if self.first_pending_ts.is_none() {
-                    self.first_pending_ts = Some(now);
-                }
-                let target_gas = gas_limit as u128 * self.target_gas_percentage as u128 / 100;
-                if total_gas >= target_gas {
-                    let fill_ratio = total_gas as f64 / gas_limit as f64;
-                    self.ewma_fill = 0.3 * fill_ratio + 0.7 * self.ewma_fill;
-                    let deviation = (self.ewma_fill - self.target_gas_percentage as f64 / 100.0).abs();
-                    self.dynamic_wait_ms = ((self.dynamic_wait_ms as f64) * (1.0 + deviation))
-                        .clamp(50.0, 1000.0) as u64;
-                    self.first_pending_ts = None;
-                    true
-                } else if let Some(t0) = self.first_pending_ts {
-                    now.duration_since(t0).as_millis() as u64 >= self.dynamic_wait_ms
-                } else {
-                    false
-                }
-            }
-            ValidationMode::Rate => {
-                if pending == 0 {
-                    return false;
-                }
-                let now = Instant::now();
-                let dt = now.duration_since(self.last_rate_ts).as_secs_f64();
-                if dt >= 1.0 {
-                    self.tx_since_last = pending as u64;
-                    self.last_rate_ts = now;
-                } else {
-                    self.tx_since_last += pending as u64;
-                }
-                let target_gas = gas_limit as u128 * self.target_gas_percentage as u128 / 100;
-                if total_gas >= target_gas {
-                    return true;
-                }
-                let avg_gas_per_tx = 50_000u128;
-                let remaining_gas = target_gas.saturating_sub(total_gas);
-                let tx_needed = (remaining_gas + avg_gas_per_tx - 1) / avg_gas_per_tx;
-                let rate_txs = if dt > 0.0 { self.tx_since_last as f64 / dt } else { 0.0 };
-                if rate_txs == 0.0 {
-                    return now.duration_since(self.last_rate_ts).as_millis() > 1000;
-                }
-                let est_time = tx_needed as f64 / rate_txs;
-                est_time <= 0.2
-            }
-        }
-    }
 
     async fn advance(&mut self) -> eyre::Result<()> {
-        let timestamp = std::cmp::max(
-            self.last_timestamp + 1,
-            std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        );
+        // Get current system time with proper error handling
+        let current_time = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_else(|e| {
+                error!(target: "engine::local", "System time error: {:?}, using last_timestamp + 1", e);
+                self.last_timestamp + 1
+            });
+        
+        // Ensure timestamp always moves forward
+        let timestamp = std::cmp::max(self.last_timestamp + 1, current_time);
+        
+        // Sanity check: if timestamp jumps too far, log a warning
+        if timestamp > self.last_timestamp + 3600 {
+            warn!(
+                target: "engine::local",
+                "Large timestamp jump detected: {} -> {} (diff: {}s)",
+                self.last_timestamp,
+                timestamp,
+                timestamp - self.last_timestamp
+            );
+        }
 
         let res = self
             .to_engine
@@ -366,10 +345,9 @@ where
 
         let payload_id = res.payload_id.ok_or_eyre("No payload id")?;
 
-        // Timeout proportionnel à la taille du pool : 2 s de base + 1 s par tranche de 500 tx,
-        // capé entre 2 s et 30 s.
+        // Dynamic timeout based on pool size: base 2s + 1s per 500 tx, capped at 30s
         let pending = self.pool.pool_size().pending as u64;
-        let timeout_secs = (2 + pending / 500).clamp(2, 30);
+        let timeout_secs = (2u64.saturating_add(pending.saturating_div(500))).clamp(2, 30);
 
         let Some(Ok(payload)) =
             tokio::time::timeout(Duration::from_secs(timeout_secs),
@@ -383,11 +361,22 @@ where
 
         let block = payload.block();
 
-        // Skip mining when block would contain zero transactions (dev --auto-mine empty tick)
-        if block.body().transaction_count() == 0 {
-            // nothing to mine yet
+        // Skip mining when block would contain zero transactions
+        let tx_count = block.body().transaction_count();
+        if tx_count == 0 {
+            // Log this as debug, not error - it's normal behavior
+            debug!(target: "engine::local", "Skipping empty block (no transactions)");
             return Ok(());
         }
+        
+        // Log successful block preparation
+        info!(
+            target: "engine::local",
+            "Prepared block #{} with {} transactions, timestamp: {}",
+            block.number(),
+            tx_count,
+            timestamp
+        );
 
         let payload = T::block_to_payload(payload.block().clone());
         let res = self.to_engine.new_payload(payload).await?;

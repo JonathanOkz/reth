@@ -4,7 +4,7 @@ use alloy_provider::network::AnyNetwork;
 use jsonrpsee::core::{DeserializeOwned, Serialize};
 use reth_chainspec::EthChainSpec;
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider, RpcBlockProvider};
-use reth_engine_local::miner::{LocalMiner, ValidationMode};
+use reth_engine_local::miner::LocalMiner;
 use reth_node_api::{BlockTy, FullNodeComponents, PayloadAttributesBuilder, PayloadTypes};
 use std::sync::Arc;
 use tracing::info;
@@ -189,8 +189,8 @@ where
                     dev_mining_mode,
                     payload_builder_handle,
                     miner_pool.clone(),
-                    80,
-                    ValidationMode::Legacy,
+                    100, // burst_threshold default
+                    500, // burst_interval_ms default,
                 )
                 .run()
                 .await

@@ -5,6 +5,8 @@ use alloy_primitives::{TxHash, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use eyre::OptionExt;
 use futures_util::{stream::Fuse, StreamExt};
+use clap::ValueEnum;
+use std::time::Instant;
 use reth_engine_primitives::BeaconConsensusEngineHandle;
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{
@@ -12,12 +14,25 @@ use reth_payload_primitives::{
 };
 use reth_provider::BlockReader;
 use reth_transaction_pool::TransactionPool;
-use std::time::{Duration, UNIX_EPOCH};
 use reth_primitives_traits::block::body::BlockBody;
+use std::time::{Duration, UNIX_EPOCH};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, warn};
 
 /// A mining mode for the local dev engine.
+/// Algorithm used to decide when to mine.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ValidationMode {
+    /// Original behaviour: mine immediately after first tx or when target gas % reached.
+    Legacy,
+    /// Adaptive EWMA fill ratio controller.
+    Ewma,
+    /// Rate-based countdown using tx/s.
+    Rate,
+}
+
+/// Mining trigger mode used by `LocalMiner` to wait for transactions before building a block.
+/// Currently only `Instant` is supported, which wakes as soon as a new pending transaction arrives.
 #[derive(Debug)]
 pub enum MiningMode {
     /// In this mode a block is built as soon as
@@ -77,6 +92,17 @@ where
     last_block_hashes: Vec<B256>,
     /// Consecutive errors when advancing the chain – used for exponential back-off.
     consecutive_errors: u8,
+    /// Algorithm selection.
+    validation_mode: ValidationMode,
+    /// Timestamp of first pending transaction.
+    first_pending_ts: Option<Instant>,
+    /// EWMA of previous block fill (0.0-1.0).
+    ewma_fill: f64,
+    /// Dynamic wait (ms) for EWMA controller.
+    dynamic_wait_ms: u64,
+    /// Sliding window tx counter for rate calculation.
+    tx_since_last: u64,
+    last_rate_ts: Instant,
 }
 
 impl<T, B, P, R> LocalMiner<T, B, P, R>
@@ -95,6 +121,7 @@ where
         payload_builder: PayloadBuilderHandle<T>,
         pool: P,
         target_gas_percentage: u8,
+        validation_mode: ValidationMode,
     ) -> Self {
         // Try to fetch the latest sealed header for initial state. If unavailable, fall back to
         // genesis-like defaults instead of panicking.
@@ -143,6 +170,12 @@ where
             last_timestamp,
             last_block_hashes,
             consecutive_errors: 0,
+            validation_mode,
+            first_pending_ts: None,
+            ewma_fill: 0.0,
+            dynamic_wait_ms: 100,
+            tx_since_last: 0,
+            last_rate_ts: Instant::now(),
         }
     }
 
@@ -170,42 +203,33 @@ where
                             continue;
                         }
                     };
+
                     let gas_limit = latest_header.gas_limit();
 
-                    let should_mine = {
-                        if pending == 0 {
-                            false
-                        } else if self.last_pending_txs == 0 {
-                            // Premier tx après minage précédent → mine tout de suite.
-                            true
-                        } else {
-                            // Charge continue : on attend jusqu’à remplir le bloc au seuil cible.
-                            let txs = self.pool.pending_transactions();
-                            if txs.is_empty() {
-                                false // cas théorique, mais soyons prudents
-                            } else {
-                                // Overflow safe addition on 128-bit.
-                                let total_gas: u128 = txs
-                                    .iter()
-                                    .fold(0u128, |acc, tx| acc.saturating_add(tx.gas_limit() as u128));
-                                total_gas >= (gas_limit as u128 * self.target_gas_percentage as u128 / 100)
-                            }
-                        }
-                    };
+                    // Estimate total gas instead of iterating over every pending tx to save CPU.
+                                                            let should_mine = self.decide_should_mine(pending, gas_limit);
+
+
 
                     if should_mine {
                         if let Err(e) = self.advance().await {
                             error!(target: "engine::local", "Error advancing the chain: {:?}", e);
                             // Increment error counter and apply exponential back-off (capped at ~6.4s)
                             self.consecutive_errors = self.consecutive_errors.saturating_add(1);
+                            // Reset adaptive timers/counters to avoid stale state
+                            self.first_pending_ts = None;
+                            self.tx_since_last = 0;
+                            self.last_rate_ts = Instant::now();
                             let backoff_ms = (1u64 << self.consecutive_errors.min(6)) * 100; // 100ms,200ms,400ms,…,6400ms
                             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                         } else {
-                            // Success – reset error counter
+                            // Successful mining — reset error counter and adaptive state
                             self.consecutive_errors = 0;
+                            self.first_pending_ts = None;
+                            self.tx_since_last = 0;
+                            self.last_rate_ts = Instant::now();
+                            self.last_pending_txs = 0;
                         }
-                        // reset counter after mining attempt
-                        self.last_pending_txs = 0;
                     } else {
                         self.last_pending_txs = pending;
                     }
@@ -251,6 +275,73 @@ where
 
     /// Generates payload attributes for a new block, passes them to FCU and inserts built payload
     /// through newPayload.
+    /// Decide whether we should mine a block according to selected mode.
+    fn decide_should_mine(&mut self, pending: usize, gas_limit: u64) -> bool {
+        // Heuristic: assume the intrinsic cost (≈21 000 gas) per transaction to estimate fill for EWMA/Rate modes.
+        let total_gas: u128 = pending as u128 * 21_000;
+        match self.validation_mode {
+            ValidationMode::Legacy => {
+                if pending == 0 {
+                    false
+                } else if self.last_pending_txs == 0 {
+                    true
+                } else {
+                    total_gas == 0 || total_gas >= (gas_limit as u128 * self.target_gas_percentage as u128 / 100)
+                }
+            }
+            ValidationMode::Ewma => {
+                if pending == 0 {
+                    self.first_pending_ts = None;
+                    return false;
+                }
+                let now = Instant::now();
+                if self.first_pending_ts.is_none() {
+                    self.first_pending_ts = Some(now);
+                }
+                let target_gas = gas_limit as u128 * self.target_gas_percentage as u128 / 100;
+                if total_gas >= target_gas {
+                    let fill_ratio = total_gas as f64 / gas_limit as f64;
+                    self.ewma_fill = 0.3 * fill_ratio + 0.7 * self.ewma_fill;
+                    let deviation = (self.ewma_fill - self.target_gas_percentage as f64 / 100.0).abs();
+                    self.dynamic_wait_ms = ((self.dynamic_wait_ms as f64) * (1.0 + deviation))
+                        .clamp(50.0, 1000.0) as u64;
+                    self.first_pending_ts = None;
+                    true
+                } else if let Some(t0) = self.first_pending_ts {
+                    now.duration_since(t0).as_millis() as u64 >= self.dynamic_wait_ms
+                } else {
+                    false
+                }
+            }
+            ValidationMode::Rate => {
+                if pending == 0 {
+                    return false;
+                }
+                let now = Instant::now();
+                let dt = now.duration_since(self.last_rate_ts).as_secs_f64();
+                if dt >= 1.0 {
+                    self.tx_since_last = pending as u64;
+                    self.last_rate_ts = now;
+                } else {
+                    self.tx_since_last += pending as u64;
+                }
+                let target_gas = gas_limit as u128 * self.target_gas_percentage as u128 / 100;
+                if total_gas >= target_gas {
+                    return true;
+                }
+                let avg_gas_per_tx = 50_000u128;
+                let remaining_gas = target_gas.saturating_sub(total_gas);
+                let tx_needed = (remaining_gas + avg_gas_per_tx - 1) / avg_gas_per_tx;
+                let rate_txs = if dt > 0.0 { self.tx_since_last as f64 / dt } else { 0.0 };
+                if rate_txs == 0.0 {
+                    return now.duration_since(self.last_rate_ts).as_millis() > 1000;
+                }
+                let est_time = tx_needed as f64 / rate_txs;
+                est_time <= 0.2
+            }
+        }
+    }
+
     async fn advance(&mut self) -> eyre::Result<()> {
         let timestamp = std::cmp::max(
             self.last_timestamp + 1,

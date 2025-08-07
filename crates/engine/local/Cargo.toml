@@ -9,6 +9,7 @@ repository.workspace = true
 exclude.workspace = true
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 # reth
 reth-chainspec.workspace = true
 reth-engine-primitives.workspace = true

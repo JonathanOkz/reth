@@ -3,7 +3,7 @@
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{TxHash, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
-use arrayvec::ArrayDeque;
+use std::collections::VecDeque;
 use reth_metrics::{metrics::{Counter, Gauge, Histogram}, metrics, Metrics};
 use eyre::OptionExt;
 use futures_util::{stream::Fuse, StreamExt};
@@ -99,7 +99,7 @@ where
     /// Timestamp for the next block.
     last_timestamp: u64,
     /// Stores latest mined blocks.
-    last_block_hashes: ArrayDeque<B256, 64>,
+    last_block_hashes: VecDeque<B256>,
     /// Consecutive errors when advancing the chain – used for exponential back-off.
     consecutive_errors: u8,
     /// Prometheus metrics
@@ -126,11 +126,15 @@ where
     ) -> Self {
         // Try to fetch the latest sealed header for initial state. If unavailable, fall back to
         // genesis-like defaults instead of panicking.
-        let (last_timestamp, mut last_block_hashes) = match provider
+        let (last_timestamp, last_block_hashes) = match provider
             .best_block_number()
             .and_then(|num| provider.sealed_header(num))
         {
-            Ok(Some(header)) => (header.timestamp(), vec![header.hash()]),
+            Ok(Some(header)) => {
+                let mut d: VecDeque<B256> = VecDeque::with_capacity(64);
+                d.push_back(header.hash());
+                (header.timestamp(), d)
+            },
             Ok(None) => {
                 warn!(target: "engine::local", "No header found for best block – starting with empty state");
                 let genesis_hash = provider
@@ -142,7 +146,7 @@ where
                         warn!(target: "engine::local", "Could not fetch genesis header; using B256::ZERO");
                         B256::ZERO
                     });
-                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), { let mut d: ArrayDeque<B256, 64> = ArrayDeque::new(); d.push_back(genesis_hash); d })
+                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), { let mut d: VecDeque::<B256> = VecDeque::with_capacity(64); d.push_back(genesis_hash); d })
             }
             Err(err) => {
                 warn!(target: "engine::local", ?err, "Error fetching best header – starting with empty state");
@@ -155,7 +159,7 @@ where
                         warn!(target: "engine::local", "Could not fetch genesis header; using B256::ZERO");
                         B256::ZERO
                     });
-                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), { let mut d: ArrayDeque<B256, 64> = ArrayDeque::new(); d.push_back(genesis_hash); d })
+                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), { let mut d: VecDeque::<B256> = VecDeque::with_capacity(64); d.push_back(genesis_hash); d })
             }
         };
 
@@ -451,7 +455,7 @@ where
         self.metrics.pending_txs_at_mine.set(tx_count as f64);
 
     // maintain ring buffer of last 64 hashes
-    if self.last_block_hashes.is_full() {
+    if self.last_block_hashes.len() == 64 {
         self.last_block_hashes.pop_front();
     }
     self.last_block_hashes.push_back(block.hash());

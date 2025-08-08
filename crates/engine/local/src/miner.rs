@@ -3,6 +3,7 @@
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{TxHash, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
+use arrayvec::ArrayDeque;
 use reth_metrics::{metrics::{Counter, Gauge, Histogram}, metrics, Metrics};
 use eyre::OptionExt;
 use futures_util::{stream::Fuse, StreamExt};
@@ -98,7 +99,7 @@ where
     /// Timestamp for the next block.
     last_timestamp: u64,
     /// Stores latest mined blocks.
-    last_block_hashes: Vec<B256>,
+    last_block_hashes: ArrayDeque<B256, 64>,
     /// Consecutive errors when advancing the chain – used for exponential back-off.
     consecutive_errors: u8,
     /// Prometheus metrics
@@ -125,7 +126,7 @@ where
     ) -> Self {
         // Try to fetch the latest sealed header for initial state. If unavailable, fall back to
         // genesis-like defaults instead of panicking.
-        let (last_timestamp, last_block_hashes) = match provider
+        let (last_timestamp, mut last_block_hashes) = match provider
             .best_block_number()
             .and_then(|num| provider.sealed_header(num))
         {
@@ -141,7 +142,7 @@ where
                         warn!(target: "engine::local", "Could not fetch genesis header; using B256::ZERO");
                         B256::ZERO
                     });
-                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), vec![genesis_hash])
+                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), { let mut d: ArrayDeque<B256, 64> = ArrayDeque::new(); d.push_back(genesis_hash); d })
             }
             Err(err) => {
                 warn!(target: "engine::local", ?err, "Error fetching best header – starting with empty state");
@@ -154,7 +155,7 @@ where
                         warn!(target: "engine::local", "Could not fetch genesis header; using B256::ZERO");
                         B256::ZERO
                     });
-                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), vec![genesis_hash])
+                (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), { let mut d: ArrayDeque<B256, 64> = ArrayDeque::new(); d.push_back(genesis_hash); d })
             }
         };
 
@@ -168,7 +169,7 @@ where
             mode,
             payload_builder,
             last_timestamp,
-            last_block_hashes,
+            last_block_hashes: last_block_hashes,
             consecutive_errors: 0,
         metrics: LocalMinerMetrics::default(),
         }
@@ -308,7 +309,7 @@ where
     /// Returns current forkchoice state.
     fn forkchoice_state(&self) -> ForkchoiceState {
         ForkchoiceState {
-            head_block_hash: *self.last_block_hashes.last().unwrap_or(&B256::ZERO),
+            head_block_hash: *self.last_block_hashes.back().unwrap_or(&B256::ZERO),
             safe_block_hash: *self
                 .last_block_hashes
                 .get(self.last_block_hashes.len().saturating_sub(32))
@@ -449,13 +450,14 @@ where
         self.metrics.block_utilization_percent.set(utilization);
         self.metrics.pending_txs_at_mine.set(tx_count as f64);
 
-    self.last_block_hashes.push(block.hash());
-        // ensure we keep at most 64 blocks
-        if self.last_block_hashes.len() > 64 {
-            self.last_block_hashes =
-                self.last_block_hashes.split_off(self.last_block_hashes.len() - 64);
-        }
+    // maintain ring buffer of last 64 hashes
+    if self.last_block_hashes.is_full() {
+        self.last_block_hashes.pop_front();
+    }
+    self.last_block_hashes.push_back(block.hash());
 
         Ok(())
     }
 }
+
+

@@ -3,6 +3,7 @@
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{TxHash, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
+use reth_metrics::{metrics::{Counter, Gauge, Histogram}, metrics, Metrics};
 use eyre::OptionExt;
 use futures_util::{stream::Fuse, StreamExt};
 use std::time::{Duration, UNIX_EPOCH};
@@ -22,7 +23,26 @@ use tracing::{debug, error, info, warn};
 
 /// Mining trigger mode used by `LocalMiner` to wait for transactions before building a block.
 /// Currently only `Instant` is supported, which wakes as soon as a new pending transaction arrives.
+/// Metrics for `LocalMiner`.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "local_miner")]
+pub struct LocalMinerMetrics {
+    /// Counter for errors encountered while mining.
+    pub miner_errors_total: Counter,
+    /// Counter for payload build timeouts (non-fatal).
+    pub miner_timeouts_total: Counter,
+    /// Histogram for payload build duration in seconds.
+    pub payload_build_duration_seconds: Histogram,
+    /// Gauge tracking block gas utilization (0-100).
+    pub block_utilization_percent: Gauge,
+    /// Gauge tracking pending transactions at the moment a block is mined.
+    pub pending_txs_at_mine: Gauge,
+    /// Gauge of current pool depth.
+    pub pending_pool_depth: Gauge,
+}
+
 #[derive(Debug)]
+/// Mining trigger modes (currently only `Instant`).
 pub enum MiningMode {
     /// In this mode a block is built as soon as
     /// a valid transaction reaches the pool.
@@ -81,6 +101,8 @@ where
     last_block_hashes: Vec<B256>,
     /// Consecutive errors when advancing the chain – used for exponential back-off.
     consecutive_errors: u8,
+    /// Prometheus metrics
+    metrics: LocalMinerMetrics,
 }
 
 impl<T, B, P, R> LocalMiner<T, B, P, R>
@@ -148,17 +170,24 @@ where
             last_timestamp,
             last_block_hashes,
             consecutive_errors: 0,
+        metrics: LocalMinerMetrics::default(),
         }
     }
 
     /// Runs the [`LocalMiner`] in a loop, polling the miner and building payloads.
     /// Handle errors during `advance` with back-off and state reset.
     async fn handle_error(&mut self) {
+        // Increment error metric
+        self.metrics.miner_errors_total.increment(1);
         self.consecutive_errors = self.consecutive_errors.saturating_add(1);
         
-        // If too many consecutive errors, panic to restart the service
+        // If too many consecutive errors, enter cooldown instead of panicking
         if self.consecutive_errors > 10 {
-            panic!("LocalMiner: Too many consecutive errors ({}), shutting down", self.consecutive_errors);
+            error!(target: "engine::local", "Too many consecutive errors ({}), entering 60s cooldown", self.consecutive_errors);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // reset error counter after cooldown
+            self.consecutive_errors = 0;
+            return;
         }
         
         // Exponential backoff with max cap at 30 seconds
@@ -320,7 +349,7 @@ where
         let timestamp = std::cmp::max(self.last_timestamp + 1, current_time);
         
         // Sanity check: if timestamp jumps too far, log a warning
-        if timestamp > self.last_timestamp + 3600 {
+        if self.last_timestamp > 0 && timestamp > self.last_timestamp + 3600 {
             warn!(
                 target: "engine::local",
                 "Large timestamp jump detected: {} -> {} (diff: {}s)",
@@ -345,24 +374,51 @@ where
 
         let payload_id = res.payload_id.ok_or_eyre("No payload id")?;
 
+        // start timing payload build
+        let build_start = std::time::Instant::now();
+
         // Dynamic timeout based on pool size: base 2s + 1s per 500 tx, capped at 30s
         let pending = self.pool.pool_size().pending as u64;
+        // metrics: current pool depth
+        self.metrics.pending_pool_depth.set(pending as f64);
         let timeout_secs = (2u64.saturating_add(pending.saturating_div(500))).clamp(2, 30);
 
-        let Some(Ok(payload)) =
-            tokio::time::timeout(Duration::from_secs(timeout_secs),
-                self.payload_builder.resolve_kind(payload_id, PayloadKind::WaitForPending))
-                .await
-                .ok()
-                .flatten()
-        else {
-            eyre::bail!("No payload")
+        let payload_res = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            self.payload_builder.resolve_kind(payload_id, PayloadKind::WaitForPending),
+        )
+        .await;
+
+        let payload = match payload_res {
+            Ok(Some(Ok(p))) => p,
+            other => {
+                // First attempt failed: classify error type
+                if other.is_err() {
+                    self.metrics.miner_timeouts_total.increment(1);
+                } else {
+                    self.metrics.miner_errors_total.increment(1);
+                }
+                // Retry once immediately with `Earliest` kind (no extra timeout)
+                match self
+                    .payload_builder
+                    .resolve_kind(payload_id, PayloadKind::Earliest)
+                    .await
+                {
+                    Some(Ok(p)) => p,
+                    _ => eyre::bail!("No payload after retry"),
+                }
+            }
         };
+
+        // record duration metric
+        self.metrics.payload_build_duration_seconds.record(build_start.elapsed().as_secs_f64());
 
         let block = payload.block();
 
         // Skip mining when block would contain zero transactions
         let tx_count = block.body().transaction_count();
+        // Record gauge even for empty blocks
+        self.metrics.pending_txs_at_mine.set(tx_count as f64);
         if tx_count == 0 {
             // Log this as debug, not error - it's normal behavior
             debug!(target: "engine::local", "Skipping empty block (no transactions)");
@@ -386,7 +442,14 @@ where
         }
 
         self.last_timestamp = timestamp;
-        self.last_block_hashes.push(block.hash());
+        // Metrics: utilization & pending tx gauges
+        let utilization = if block.gas_limit() > 0 {
+            (block.gas_used() as f64 / block.gas_limit() as f64) * 100.0
+        } else { 0.0 };
+        self.metrics.block_utilization_percent.set(utilization);
+        self.metrics.pending_txs_at_mine.set(tx_count as f64);
+
+    self.last_block_hashes.push(block.hash());
         // ensure we keep at most 64 blocks
         if self.last_block_hashes.len() > 64 {
             self.last_block_hashes =

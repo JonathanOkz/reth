@@ -43,6 +43,10 @@ pub struct LocalMinerMetrics {
     pub pending_txs_at_mine: Gauge,
     /// Gauge of current pool depth.
     pub pending_pool_depth: Gauge,
+    /// Counter for successfully mined blocks.
+    pub blocks_mined_total: Counter,
+    /// Counter for total transactions included in mined blocks.
+    pub txs_mined_total: Counter,
 }
 
 #[derive(Debug)]
@@ -413,16 +417,22 @@ where
 
     /// Returns current forkchoice state.
     fn forkchoice_state(&self) -> ForkchoiceState {
+        let len = self.last_block_hashes.len();
+        let head = *self.last_block_hashes.back().unwrap_or(&B256::ZERO);
+        let safe = if len >= 32 {
+            *self.last_block_hashes.get(len - 32).unwrap_or(&B256::ZERO)
+        } else {
+            B256::ZERO
+        };
+        let finalized = if len >= 64 {
+            *self.last_block_hashes.get(len - 64).unwrap_or(&B256::ZERO)
+        } else {
+            B256::ZERO
+        };
         ForkchoiceState {
-            head_block_hash: *self.last_block_hashes.back().unwrap_or(&B256::ZERO),
-            safe_block_hash: *self
-                .last_block_hashes
-                .get(self.last_block_hashes.len().saturating_sub(32))
-                .unwrap_or(&B256::ZERO),
-            finalized_block_hash: *self
-                .last_block_hashes
-                .get(self.last_block_hashes.len().saturating_sub(64))
-                .unwrap_or(&B256::ZERO),
+            head_block_hash: head,
+            safe_block_hash: safe,
+            finalized_block_hash: finalized,
         }
     }
 
@@ -496,10 +506,11 @@ where
         let pending = self.pool.pool_size().pending as usize;
         // metrics: current pool depth
         self.metrics.pending_pool_depth.set(pending as f64);
-        let timeout_dur = Duration::from_millis(self.burst_interval_ms);
+        // Clamp build timeout to a sane range [50ms, 5s]
+        let timeout_ms = self.burst_interval_ms.clamp(50, 5_000);
 
         let payload_res = tokio::time::timeout(
-            timeout_dur,
+            Duration::from_millis(timeout_ms),
             self.payload_builder.resolve_kind(payload_id, PayloadKind::WaitForPending),
         )
         .await;
@@ -513,14 +524,21 @@ where
                 } else {
                     self.metrics.miner_errors_total.increment(1);
                 }
-                // Retry once immediately with `Earliest` kind (no extra timeout)
-                match self
-                    .payload_builder
-                    .resolve_kind(payload_id, PayloadKind::Earliest)
-                    .await
-                {
-                    Some(Ok(p)) => p,
-                    _ => eyre::bail!("No payload after retry"),
+                // Retry once immediately with `Earliest` kind under a short timeout
+                let retry_timeout_ms = self.burst_interval_ms.min(200).max(50);
+                let retry = tokio::time::timeout(
+                    Duration::from_millis(retry_timeout_ms),
+                    self.payload_builder.resolve_kind(payload_id, PayloadKind::Earliest),
+                )
+                .await;
+
+                match retry {
+                    Ok(Some(Ok(p))) => p,
+                    Ok(_) => eyre::bail!("No payload after retry"),
+                    Err(_) => {
+                        self.metrics.miner_timeouts_total.increment(1);
+                        eyre::bail!("Retry timeout waiting for payload")
+                    }
                 }
             }
         };
@@ -558,6 +576,10 @@ where
             eyre::bail!("Invalid payload")
         }
 
+        // Counters for successful block/tx production
+        self.metrics.blocks_mined_total.increment(1);
+        self.metrics.txs_mined_total.increment(tx_count as u64);
+
         // Update adaptive estimator with actual gas usage of this block
         self.adaptive.on_mined_block(block.gas_used(), tx_count);
 
@@ -574,6 +596,11 @@ where
         self.last_block_hashes.pop_front();
     }
     self.last_block_hashes.push_back(block.hash());
+
+        // Send immediate FCU after new head is known; log on failure
+        if let Err(e) = self.update_forkchoice_state().await {
+            error!(target: "engine::local", "Error updating fork choice after new block: {:?}", e);
+        }
 
         Ok(())
     }

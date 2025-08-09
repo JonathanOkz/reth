@@ -1,9 +1,9 @@
-//! Simple unit test verifying ring buffer logic for LocalMiner
+//! Tests for the head history ring buffer used by `LocalMiner`.
 //! Ensures after 100 insertions only 64 elements are kept and that
-//! head/safe/finalized hashes correspond to indices 0, 32, 63.
+//! head/safe/finalized hashes correspond to distances 0, 32, and 64.
 
-use std::collections::VecDeque;
 use alloy_primitives::B256;
+use reth_engine_local::forkchoice::HeadHistory;
 
 // Helper to create unique B256 from u64
 fn hash(i: u64) -> B256 {
@@ -14,51 +14,91 @@ fn hash(i: u64) -> B256 {
 }
 
 #[test]
-fn ring_buffer_keeps_last_64() {
-    let mut buf: VecDeque<B256> = VecDeque::with_capacity(64);
+fn head_history_keeps_last_64_and_state() {
+    let mut hist = HeadHistory::new(None);
 
     for i in 0u64..100 {
-        if buf.len() == 64 {
-            buf.pop_front();
-        }
-        buf.push_back(hash(i));
+        hist.push(hash(i));
     }
 
-    assert_eq!(buf.len(), 64, "Buffer length should stay at 64");
+    assert_eq!(hist.len(), 64, "History length should stay at 64");
 
     // Expected range in buffer is 36..=99 (inclusive)
     let head = hash(99);
-    let safe = hash(68);      // head - 31 (matches miner's len-32)
-    let finalized = hash(36); // head - 63 (matches miner's len-64 retrieval)
+    let safe = hash(68);      // index len-32
+    let finalized = hash(36); // index len-64
 
-    assert_eq!(buf.back().cloned().unwrap(), head, "Head hash mismatch");
-    assert_eq!(buf.get(buf.len() - 32).cloned().unwrap(), safe, "Safe hash mismatch");
-    assert_eq!(buf.front().cloned().unwrap(), finalized, "Finalized hash mismatch");
+    let state = hist.state();
+    assert_eq!(state.head_block_hash, head, "Head hash mismatch");
+    assert_eq!(state.safe_block_hash, safe, "Safe hash mismatch");
+    assert_eq!(state.finalized_block_hash, finalized, "Finalized hash mismatch");
 }
 
 #[test]
-fn ring_buffer_perf_push_pop_under_50ns() {
-    use std::{collections::VecDeque, time::Instant, hint::black_box};
+fn head_history_perf_push_under_50ns() {
+    use std::{time::Instant, hint::black_box};
 
     const ITERS: usize = 1_000_000;
-    let mut buf: VecDeque<B256> = VecDeque::with_capacity(64);
+    let mut hist = HeadHistory::new(None);
 
     let start = Instant::now();
     for i in 0u64..ITERS as u64 {
-        if buf.len() == 64 {
-            buf.pop_front();
-        }
-        buf.push_back(hash(i));
-        black_box(buf.back());
+        hist.push(hash(i));
+        black_box(hist.len());
     }
     let dur = start.elapsed();
     let avg_ns = dur.as_nanos() as f64 / ITERS as f64;
-    println!("Avg push/pop: {:.2} ns", avg_ns);
+    println!("Avg push: {:.2} ns", avg_ns);
 
     #[cfg(debug_assertions)]
     assert!(avg_ns < 200.0, "Too slow in debug: {:.2} ns", avg_ns);
     #[cfg(not(debug_assertions))]
     assert!(avg_ns < 50.0, "Too slow in release: {:.2} ns", avg_ns);
 
-    assert_eq!(buf.len(), 64, "Buffer length drifted");
+    assert_eq!(hist.len(), 64, "History length drifted");
+}
+
+#[test]
+fn head_history_empty_state_zero() {
+    let hist = HeadHistory::new(None);
+    let state = hist.state();
+    assert_eq!(state.head_block_hash, B256::ZERO);
+    assert_eq!(state.safe_block_hash, B256::ZERO);
+    assert_eq!(state.finalized_block_hash, B256::ZERO);
+}
+
+#[test]
+fn head_history_boundaries() {
+    // < 32 entries: safe/finalized should be ZERO
+    let mut hist = HeadHistory::new(None);
+    for i in 0u64..10 { hist.push(hash(i)); }
+    let s = hist.state();
+    assert_eq!(s.head_block_hash, hash(9));
+    assert_eq!(s.safe_block_hash, B256::ZERO);
+    assert_eq!(s.finalized_block_hash, B256::ZERO);
+
+    // exactly 32 entries: safe becomes the first inserted, finalized still ZERO
+    let mut hist = HeadHistory::new(None);
+    for i in 0u64..32 { hist.push(hash(i)); }
+    let s = hist.state();
+    assert_eq!(s.head_block_hash, hash(31));
+    // With implementation using len - 32 indexing, this yields head - 31
+    assert_eq!(s.safe_block_hash, hash(0));
+    assert_eq!(s.finalized_block_hash, B256::ZERO);
+
+    // exactly 64 entries: finalized becomes the first inserted
+    let mut hist = HeadHistory::new(None);
+    for i in 0u64..64 { hist.push(hash(i)); }
+    let s = hist.state();
+    assert_eq!(s.head_block_hash, hash(63));
+    assert_eq!(s.safe_block_hash, hash(32)); // len - 32 => value 32
+    assert_eq!(s.finalized_block_hash, hash(0));
+
+    // 65 entries: ring drops the oldest (0), range is 1..=64
+    let mut hist = HeadHistory::new(None);
+    for i in 0u64..65 { hist.push(hash(i)); }
+    let s = hist.state();
+    assert_eq!(s.head_block_hash, hash(64));
+    assert_eq!(s.safe_block_hash, hash(33)); // len - 32 => index 32 => value 33
+    assert_eq!(s.finalized_block_hash, hash(1));
 }

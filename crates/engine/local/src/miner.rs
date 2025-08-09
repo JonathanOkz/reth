@@ -119,7 +119,7 @@ impl MiningMode {
 #[derive(Debug)]
 pub struct LocalMiner<T: PayloadTypes, B, P, R>
 where
-    P: TransactionPool,
+    P: TransactionPool + Clone + Send + 'static,
     R: BlockReader,
 {
     /// Blockchain data provider for latest headers (currently unused but kept for future enhancements)
@@ -154,7 +154,7 @@ impl<T, B, P, R> LocalMiner<T, B, P, R>
 where
     T: PayloadTypes,
     B: PayloadAttributesBuilder<<T as PayloadTypes>::PayloadAttributes>,
-    P: TransactionPool,
+    P: TransactionPool + Clone + Send + 'static,
     R: BlockReader,
 {
     /// Spawns a new [`LocalMiner`] with the given parameters.
@@ -339,6 +339,22 @@ where
             tokio::select! {
                 // Triggered on every new pending tx (instant mode)
                 _ = self.mode.wait() => {
+                    let pending = self.pool.pool_size().pending as usize;
+
+                    // Dynamic switch between Instant and Debounced based on pending txs
+                    if pending >= burst_threshold {
+                        if !matches!(self.mode, MiningMode::Debounced(_)) {
+                            info!(target: "engine::local", "Switching mining mode → Debounced (pending={})", pending);
+                            self.mode = MiningMode::debounced(self.pool.clone(), interval_ms.clamp(50, 500));
+                        }
+                    } else {
+                        if !matches!(self.mode, MiningMode::Instant(_)) {
+                            info!(target: "engine::local", "Switching mining mode → Instant (pending={})", pending);
+                            self.mode = MiningMode::instant(self.pool.clone());
+                        }
+                    }
+
+
                     let pending = self.pool.pool_size().pending;
                     
                     

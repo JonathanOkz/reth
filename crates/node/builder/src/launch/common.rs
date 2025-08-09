@@ -445,9 +445,10 @@ impl<R, ChainSpec: EthChainSpec> LaunchContextWith<Attached<WithConfigs<ChainSpe
     }
 
     /// Returns the [`MiningMode`] intended for --dev mode.
-    pub fn dev_mining_mode(&self, pool: impl TransactionPool) -> MiningMode {
+    /// Uses debounced mode with small period to avoid CPU spin while still reacting quickly.
+    pub fn dev_mining_mode(&self, pool: impl TransactionPool + Clone + Send + 'static) -> MiningMode {
         let _ = self.node_config().dev.block_time;
-        MiningMode::instant(pool)
+        MiningMode::debounced(pool, 100)
     }
 }
 

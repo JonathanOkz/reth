@@ -191,6 +191,12 @@ where
                     miner_pool.clone(),
                     100, // burst_threshold default
                     500, // burst_interval_ms default,
+                    50_000.0, // initial avg tx gas
+                    0.2,  // alpha_gas
+                    0.3,  // kp
+                    0.1,  // kd
+                    1,    // min tx
+                    30_000, // max tx
                 )
                 .run()
                 .await

@@ -4,10 +4,13 @@ use alloy_consensus::BlockHeader;
 use alloy_primitives::{TxHash, B256};
 use alloy_rpc_types_engine::ForkchoiceState;
 use std::collections::VecDeque;
+use crate::adaptive_target::{AdaptiveTarget, AdaptiveTargetConfig, GasAvgConfig, GasLimitConfig, TxBounds};
 use reth_metrics::{metrics::{Counter, Gauge, Histogram}, metrics, Metrics};
 use eyre::OptionExt;
 use futures_util::{stream::Fuse, StreamExt};
 use std::time::{Duration, UNIX_EPOCH};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use tokio::sync::mpsc;
 use reth_engine_primitives::BeaconConsensusEngineHandle;
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{
@@ -48,6 +51,8 @@ pub enum MiningMode {
     /// In this mode a block is built as soon as
     /// a valid transaction reaches the pool.
     Instant(Fuse<ReceiverStream<TxHash>>),
+    /// Debounced mode: emits at most one trigger per period when busy
+    Debounced(mpsc::Receiver<()>),
 }
 
 impl MiningMode {
@@ -57,6 +62,39 @@ impl MiningMode {
         Self::Instant(ReceiverStream::new(rx).fuse())
     }
 
+    /// Constructor for debounced mode
+    pub fn debounced<Pool>(pool: Pool, period_ms: u64) -> Self
+    where
+        Pool: TransactionPool + Clone + Send + 'static,
+    {
+        let period_ms = period_ms.clamp(50, 500);
+        let flag = Arc::new(AtomicBool::new(false));
+        let (tx_alert, rx_alert) = mpsc::channel::<()>(1);
+
+        // Spawn listener task that sets the flag on every new tx
+        {
+            let flag_clone = Arc::clone(&flag);
+            let mut listener = pool.pending_transactions_listener();
+            tokio::spawn(async move {
+                while listener.recv().await.is_some() {
+                    flag_clone.store(true, Ordering::Relaxed);
+                }
+            });
+        }
+
+        // Spawn timer task that checks the flag periodically
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_millis(period_ms));
+            loop {
+                ticker.tick().await;
+                if flag.swap(false, Ordering::Relaxed) {
+                    let _ = tx_alert.try_send(());
+                }
+            }
+        });
+
+        Self::Debounced(rx_alert)
+    }
 }
 
 impl MiningMode {
@@ -68,6 +106,10 @@ impl MiningMode {
                 if rx.next().await.is_none() {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
+            }
+            Self::Debounced(rx) => {
+                // One tick per debounce period while busy
+                let _ = rx.recv().await;
             }
         }
     }
@@ -104,6 +146,8 @@ where
     consecutive_errors: u8,
     /// Prometheus metrics
     metrics: LocalMinerMetrics,
+    /// Adaptive gas target controller
+    adaptive: AdaptiveTarget,
 }
 
 impl<T, B, P, R> LocalMiner<T, B, P, R>
@@ -123,6 +167,12 @@ where
         pool: P,
         burst_threshold: usize,
         burst_interval_ms: u64,
+        initial_avg_tx_gas: f64,
+        alpha_gas: f64,
+        kp: f64,
+        kd: f64,
+        min_tx_per_block: usize,
+        max_tx_per_block: usize,
     ) -> Self {
         // Try to fetch the latest sealed header for initial state. If unavailable, fall back to
         // genesis-like defaults instead of panicking.
@@ -163,6 +213,39 @@ where
             }
         };
 
+        // Determine gas limit from latest sealed header, or fall back to genesis header.
+        let gas_limit = provider
+            .best_block_number()
+            .and_then(|n| provider.sealed_header(n))
+            .ok()
+            .flatten()
+            .or_else(|| provider.sealed_header(0).ok().flatten())
+            .map(|h| h.gas_limit())
+            .expect("Unable to determine block gas limit (no sealed or genesis header present)");
+
+        // Validate numeric parameters
+                assert!(alpha_gas > 0.0 && alpha_gas <= 1.0, "mine-alpha must be within (0,1]");
+        assert!(min_tx_per_block >= 1, "mine-min-tx must be at least 1");
+        assert!(min_tx_per_block <= max_tx_per_block, "mine-min-tx must be <= mine-max-tx");
+        assert!(initial_avg_tx_gas > 0.0, "mine-initial-avg-tx-gas must be positive");
+        assert!(burst_threshold > 0, "mine-burst-threshold must be positive");
+        assert!(burst_interval_ms > 0, "mine-burst-interval-ms must be positive");
+
+        let adaptive_cfg = AdaptiveTargetConfig {
+            gas_limit,
+            target_gas_percent: 50.0,
+            gas_avg_config: GasAvgConfig {
+                initial_avg_tx_gas,
+                alpha: alpha_gas,
+            },
+            gas_limit_config: GasLimitConfig { kp, kd },
+            tx_bounds: TxBounds {
+                min: min_tx_per_block,
+                max: max_tx_per_block,
+            },
+        };
+        let adaptive = AdaptiveTarget::new(adaptive_cfg);
+
         Self {
             _provider: provider,
             pool,
@@ -175,7 +258,8 @@ where
             last_timestamp,
             last_block_hashes: last_block_hashes,
             consecutive_errors: 0,
-        metrics: LocalMinerMetrics::default(),
+            metrics: LocalMinerMetrics::default(),
+            adaptive,
         }
     }
 
@@ -257,14 +341,15 @@ where
                 _ = self.mode.wait() => {
                     let pending = self.pool.pool_size().pending;
                     
+                    
                     // Prevent mining too frequently
                     let now = std::time::Instant::now();
                     if now.duration_since(last_mine_attempt) < min_mine_interval {
                         continue;
                     }
                     
-                    // Only mine in instant mode if below burst threshold
-                    if pending > 0 && pending < burst_threshold {
+                    // Decide using adaptive target instead of static threshold
+                    if self.adaptive.should_mine(pending as usize) && (pending as usize) < burst_threshold {
                         last_mine_attempt = now;
                         
                         // Mine immediately with whatever is pending (fast path)
@@ -351,7 +436,16 @@ where
             });
         
         // Ensure timestamp always moves forward
-        let timestamp = std::cmp::max(self.last_timestamp + 1, current_time);
+        let mut timestamp = std::cmp::max(self.last_timestamp + 1, current_time);
+        const MAX_SKEW_SECS: u64 = 3600; // allow up to 1 hour into the future
+        if timestamp > current_time + MAX_SKEW_SECS {
+            warn!(
+                target: "engine::local",
+                "System clock appears to have jumped forward by more than {} s (ts={}, now={}), clamping to now+MAX_SKEW", 
+                MAX_SKEW_SECS, timestamp, current_time
+            );
+            timestamp = current_time + MAX_SKEW_SECS;
+        }
         
         // Sanity check: if timestamp jumps too far, log a warning
         if self.last_timestamp > 0 && timestamp > self.last_timestamp + 3600 {
@@ -382,14 +476,14 @@ where
         // start timing payload build
         let build_start = std::time::Instant::now();
 
-        // Dynamic timeout based on pool size: base 2s + 1s per 500 tx, capped at 30s
-        let pending = self.pool.pool_size().pending as u64;
+                // Timeout aligned with target cadence (burst_interval_ms).
+        let pending = self.pool.pool_size().pending as usize;
         // metrics: current pool depth
         self.metrics.pending_pool_depth.set(pending as f64);
-        let timeout_secs = (2u64.saturating_add(pending.saturating_div(500))).clamp(2, 30);
+        let timeout_dur = Duration::from_millis(self.burst_interval_ms);
 
         let payload_res = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
+            timeout_dur,
             self.payload_builder.resolve_kind(payload_id, PayloadKind::WaitForPending),
         )
         .await;
@@ -425,6 +519,8 @@ where
         // Record gauge even for empty blocks
         self.metrics.pending_txs_at_mine.set(tx_count as f64);
         if tx_count == 0 {
+            // Even empty block outcome should update adaptive avg gas mildly (skip)
+
             // Log this as debug, not error - it's normal behavior
             debug!(target: "engine::local", "Skipping empty block (no transactions)");
             return Ok(());
@@ -445,6 +541,9 @@ where
         if !res.is_valid() {
             eyre::bail!("Invalid payload")
         }
+
+        // Update adaptive estimator with actual gas usage of this block
+        self.adaptive.on_mined_block(block.gas_used(), tx_count);
 
         self.last_timestamp = timestamp;
         // Metrics: utilization & pending tx gauges

@@ -10,6 +10,9 @@
 
 pub mod miner;
 pub mod payload;
+/// Adaptive gas target controller used by `LocalMiner`.
+pub mod adaptive_target;
 
 pub use miner::{LocalMiner, MiningMode};
+pub use adaptive_target::AdaptiveTarget;
 pub use payload::LocalPayloadAttributesBuilder;

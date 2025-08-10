@@ -30,8 +30,8 @@ where
     fn build(&self, timestamp: u64) -> EthPayloadAttributes {
         EthPayloadAttributes {
             timestamp,
-            prev_randao: B256::random(),
-            suggested_fee_recipient: Address::random(),
+            prev_randao: keccak256([timestamp.to_be_bytes().as_slice(), keccak256(self.chain_spec.genesis_hash().as_slice()).as_slice()].concat()),
+            suggested_fee_recipient: Address::ZERO,
             withdrawals: self
                 .chain_spec
                 .is_shanghai_active_at_timestamp(timestamp)

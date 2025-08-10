@@ -60,7 +60,7 @@ where
                     // If a resync is happening, skip work this tick
                     if self.resync.in_progress() { continue; }
 
-                    let pending_usize = self.pool.pool_size().pending as usize;
+                    let pending_usize = self.pool.pool_size().pending;
 
                     // Switch between Instant and Debounced dynamically using hysteresis policy
                     self.switch_mode_if_needed(pending_usize, interval_ms);
@@ -95,7 +95,7 @@ where
                     // If a resync is happening, skip work this tick
                     if self.resync.in_progress() { continue; }
 
-                    let pending = self.pool.pool_size().pending as usize;
+                    let pending = self.pool.pool_size().pending;
 
                     // In Debounced mode, mine on cadence while pending is above the exit threshold
                     if matches!(&self.mode, MiningMode::Debounced { .. }) && pending >= self.policy.exit_burst_threshold {

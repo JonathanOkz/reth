@@ -19,9 +19,6 @@ use tokio_util::sync::CancellationToken;
 use crate::switch_policy::ModeSwitchPolicy;
 use crate::resync::{ResyncController, ResyncConfig};
 
-/// A mining mode for the local dev engine.
-/// Algorithm used to decide when to mine.
-
 /// Local miner advancing the chain
 #[derive(Debug)]
 pub struct LocalMiner<T: PayloadTypes, B, P, R>
@@ -41,8 +38,6 @@ where
     pub(crate) mode: MiningMode,
     /// The payload builder for the engine
     payload_builder: PayloadBuilderHandle<T>,
-    /// Pending tx count threshold to switch to burst mining mode.
-    pub(crate) burst_threshold: usize,
     /// Interval in milliseconds to mine blocks when above threshold.
     pub(crate) burst_interval_ms: u64,
     /// Timestamp for the next block.
@@ -70,7 +65,8 @@ where
     P: TransactionPool + Clone + Send + 'static,
     R: BlockReader,
 {
-    /// Spawns a new [`LocalMiner`] with the given parameters.
+    /// Spawns a new [`LocalMiner`] using domain configs for adaptive tuning.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: R,
         payload_attributes_builder: B,
@@ -80,63 +76,59 @@ where
         pool: P,
         burst_threshold: usize,
         burst_interval_ms: u64,
-        initial_avg_tx_gas: f64,
-        alpha_gas: f64,
-        kp: f64,
-        kd: f64,
-        min_tx_per_block: usize,
-        max_tx_per_block: usize,
+        gas_avg_config: GasAvgConfig,
+        gas_limit_config: GasLimitConfig,
+        tx_bounds: TxBounds,
+        target_gas_percent: f64,
     ) -> Self {
-        // Try to fetch the latest sealed header for initial state. If unavailable, fall back to
-        // genesis-like defaults instead of panicking.
+        assert!(burst_threshold > 0, "mine-burst-threshold must be positive");
+        assert!(burst_interval_ms > 0, "mine-burst-interval-ms must be positive");
+        assert!(gas_avg_config.initial_avg_tx_gas > 0.0, "mine-initial-avg-tx-gas must be positive");
+        assert!(gas_avg_config.alpha > 0.0 && gas_avg_config.alpha <= 1.0, "mine-alpha must be within (0,1]");
+        assert!(tx_bounds.min >= 1, "mine-min-tx must be at least 1");
+        assert!(tx_bounds.min <= tx_bounds.max, "mine-min-tx must be <= mine-max-tx");
+
+        // Establish initial timestamp and head history.
         let (last_timestamp, head_history) = match provider
             .best_block_number()
             .and_then(|num| provider.sealed_header(num))
         {
-            Ok(Some(header)) => {
-                (header.timestamp(), HeadHistory::new(Some(header.hash())))
-            },
+            Ok(Some(header)) => (header.timestamp(), HeadHistory::new(Some(header.hash()))),
             Ok(None) => {
-                warn!(target: "engine::local", "No header found for best block – starting with empty state");
+                warn!(target: "engine::local", "No best header – starting with current time");
                 let genesis_hash = provider
                     .sealed_header(0)
                     .ok()
                     .flatten()
                     .map(|h| h.hash())
-                    .unwrap_or_else(|| {
-                        warn!(target: "engine::local", "Could not fetch genesis header; using B256::ZERO");
-                        B256::ZERO
-                    });
+                    .unwrap_or(B256::ZERO);
                 (
                     std::time::SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs(),
-                    HeadHistory::new(Some(genesis_hash))
+                    HeadHistory::new(Some(genesis_hash)),
                 )
             }
             Err(err) => {
-                warn!(target: "engine::local", ?err, "Error fetching best header – starting with empty state");
+                warn!(target: "engine::local", ?err, "Error fetching best header – using defaults");
                 let genesis_hash = provider
                     .sealed_header(0)
                     .ok()
                     .flatten()
                     .map(|h| h.hash())
-                    .unwrap_or_else(|| {
-                        warn!(target: "engine::local", "Could not fetch genesis header; using B256::ZERO");
-                        B256::ZERO
-                    });
+                    .unwrap_or(B256::ZERO);
                 (
                     std::time::SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs(),
-                    HeadHistory::new(Some(genesis_hash))
+                    HeadHistory::new(Some(genesis_hash)),
                 )
             }
         };
 
-        // Determine gas limit from latest sealed header, or fall back to genesis header.
+        // Discover gas limit from latest header (or genesis fallback).
         let gas_limit = provider
             .best_block_number()
             .and_then(|n| provider.sealed_header(n))
@@ -144,34 +136,18 @@ where
             .flatten()
             .or_else(|| provider.sealed_header(0).ok().flatten())
             .map(|h| h.gas_limit())
-            .expect("Unable to determine block gas limit (no sealed or genesis header present)");
+            .expect("Unable to determine block gas limit (no headers present)");
 
-        // Validate numeric parameters
-        assert!(alpha_gas > 0.0 && alpha_gas <= 1.0, "mine-alpha must be within (0,1]");
-        assert!(min_tx_per_block >= 1, "mine-min-tx must be at least 1");
-        assert!(min_tx_per_block <= max_tx_per_block, "mine-min-tx must be <= mine-max-tx");
-        assert!(initial_avg_tx_gas > 0.0, "mine-initial-avg-tx-gas must be positive");
-        assert!(burst_threshold > 0, "mine-burst-threshold must be positive");
-        assert!(burst_interval_ms > 0, "mine-burst-interval-ms must be positive");
-
-        let adaptive_cfg = AdaptiveTargetConfig {
+        // Assemble adaptive target config using discovered gas_limit and provided domain configs.
+        let adaptive = AdaptiveTarget::new(AdaptiveTargetConfig {
             gas_limit,
-            target_gas_percent: 50.0,
-            gas_avg_config: GasAvgConfig {
-                initial_avg_tx_gas,
-                alpha: alpha_gas,
-            },
-            gas_limit_config: GasLimitConfig { kp, kd },
-            tx_bounds: TxBounds {
-                min: min_tx_per_block,
-                max: max_tx_per_block,
-            },
-        };
-        let adaptive = AdaptiveTarget::new(adaptive_cfg);
+            target_gas_percent,
+            gas_avg_config,
+            gas_limit_config,
+            tx_bounds,
+        });
 
-        // --- Hysteresis policy defaults ---
-        // By default, enter threshold equals the provided burst_threshold,
-        // and exit threshold is 80% of enter threshold. Minimum dwell: 500ms.
+        // Hysteresis policy: exit = 80% of enter, minimum dwell 500ms.
         let exit_threshold = std::cmp::max(1, burst_threshold.saturating_mul(8) / 10);
         let policy = ModeSwitchPolicy::new(
             burst_threshold,
@@ -182,7 +158,6 @@ where
         Self {
             _provider: provider,
             pool,
-            burst_threshold,
             burst_interval_ms,
             payload_attributes_builder,
             to_engine,
@@ -206,6 +181,7 @@ where
     }
 
     /// Reset adaptive state after a successful block.
+    #[allow(clippy::missing_const_for_fn)]
     pub(crate) fn reset_state_after_success(&mut self) {
         self.consecutive_errors = 0;
 

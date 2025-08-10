@@ -5,6 +5,7 @@ use jsonrpsee::core::{DeserializeOwned, Serialize};
 use reth_chainspec::EthChainSpec;
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider, RpcBlockProvider};
 use reth_engine_local::miner::LocalMiner;
+use reth_engine_local::adaptive_target::{GasAvgConfig, GasLimitConfig, TxBounds};
 use reth_node_api::{BlockTy, FullNodeComponents, PayloadAttributesBuilder, PayloadTypes};
 use std::sync::Arc;
 use tracing::info;
@@ -189,14 +190,12 @@ where
                     dev_mining_mode,
                     payload_builder_handle,
                     miner_pool.clone(),
-                    100, // burst_threshold default
-                    500, // burst_interval_ms default,
-                    50_000.0, // initial avg tx gas
-                    0.2,  // alpha_gas
-                    0.3,  // kp
-                    0.1,  // kd
-                    1,    // min tx
-                    30_000, // max tx
+                    100,    // burst_threshold default
+                    500,    // burst_interval_ms default
+                    GasAvgConfig { initial_avg_tx_gas: 50_000.0, alpha: 0.2 },
+                    GasLimitConfig { kp: 0.3, kd: 0.1 },
+                    TxBounds { min: 1, max: 30_000 },
+                    50.0,   // target_gas_percent
                 )
                 .run()
                 .await

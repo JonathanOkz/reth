@@ -64,13 +64,12 @@ pub struct AdaptiveTargetConfig {
 /// Algorithm outline
 /// -----------------
 /// 1. Track an exponentially-weighted moving average (EWMA) of the
-///    *observed* gas per transaction (`avg_tx_gas`).
-/// 2. Compute the **desired gas per block** as:
-///        desired_block_gas = gas_limit * target_gas_percent / 100.0
-/// 3. Derive the **transaction target** as:
-///        tx_target = desired_block_gas / avg_tx_gas
-/// 4. Clamp `tx_target` so it always stays within
-///    `[min_tx_per_block, max_tx_per_block]`.
+///    observed gas per transaction (`avg_tx_gas`).
+/// 2. Compute the desired gas per block as:
+///    `desired_block_gas = gas_limit * target_gas_percent / 100.0`
+/// 3. Derive the transaction target as:
+///    `tx_target = desired_block_gas / avg_tx_gas`
+/// 4. Clamp `tx_target` so it always stays within `[min_tx_per_block, max_tx_per_block]`.
 ///
 /// The resulting `tx_target` can be queried via [`Self::tx_target`] and
 /// should be re-evaluated each time the miner wants to decide whether
@@ -121,14 +120,16 @@ impl AdaptiveTarget {
         }
         // --- 1. Mettre à jour la moyenne de gas par transaction -------------------
         let observed_avg = block_gas_used as f64 / tx_count as f64;
-        self.avg_tx_gas = self.alpha_gas * observed_avg + (1.0 - self.alpha_gas) * self.avg_tx_gas;
+        self.avg_tx_gas = self
+            .alpha_gas
+            .mul_add(observed_avg, (1.0 - self.alpha_gas) * self.avg_tx_gas);
 
         // --- 2. Ajuster dynamiquement la cible de remplissage ---------------------
         let observed_fill_percent = block_gas_used as f64 * 100.0 / self.gas_limit as f64;
 
         // --- 2a. PID controller on utilisation ----------------------------------
         let error = observed_fill_percent - self.target_gas_percent;
-        let delta = self.kp * error + self.kd * (error - self.prev_error);
+        let delta = self.kp.mul_add(error, self.kd * (error - self.prev_error));
         self.prev_error = error;
         self.target_gas_percent += delta;
 

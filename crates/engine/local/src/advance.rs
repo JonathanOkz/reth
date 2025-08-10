@@ -89,7 +89,7 @@ where
     let build_start = std::time::Instant::now();
 
     // metrics: current pool depth
-    let pending = pool.pool_size().pending as usize;
+    let pending = pool.pool_size().pending;
     metrics.pending_pool_depth.set(pending as f64);
 
     // Clamp build timeout to a sane range [50ms, 5s]
@@ -111,7 +111,7 @@ where
                 metrics.miner_errors_total.increment(1);
             }
             // Retry once immediately with `Earliest` kind under a short timeout
-            let retry_timeout_ms = burst_interval_ms.min(200).max(50);
+            let retry_timeout_ms = burst_interval_ms.clamp(50, 200);
             let retry = tokio::time::timeout(
                 Duration::from_millis(retry_timeout_ms),
                 payload_builder.resolve_kind(payload_id, PayloadKind::Earliest),

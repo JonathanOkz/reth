@@ -56,18 +56,12 @@ impl ModeSwitchPolicy {
 
         match current_mode {
             MiningMode::Instant(_) => {
-                if pending_txs >= self.enter_burst_threshold {
-                    Some(SwitchDecision::ToDebounced)
-                } else {
-                    None
-                }
+                (pending_txs >= self.enter_burst_threshold)
+                    .then_some(SwitchDecision::ToDebounced)
             }
             MiningMode::Debounced { .. } => {
-                if pending_txs <= self.exit_burst_threshold {
-                    Some(SwitchDecision::ToInstant)
-                } else {
-                    None
-                }
+                (pending_txs <= self.exit_burst_threshold)
+                    .then_some(SwitchDecision::ToInstant)
             }
         }
     }

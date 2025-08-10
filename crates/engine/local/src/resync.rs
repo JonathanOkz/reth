@@ -65,7 +65,7 @@ impl ResyncController {
     }
 
     /// Whether a resync is currently ongoing (the miner loop can briefly skip work).
-    pub fn in_progress(&self) -> bool { self.in_progress }
+    pub const fn in_progress(&self) -> bool { self.in_progress }
 
     /// Record an FCU outcome and return whether a resync should be performed.
     ///
@@ -80,13 +80,13 @@ impl ResyncController {
             && self.last_resync_at.elapsed() >= self.cfg.min_resync_dwell
     }
 
-    /// Inspect an advance() error and return whether a resync should be performed.
+    /// Inspect an `advance()` error and return whether a resync should be performed.
     ///
     /// Heuristic classification based on error string avoids plumbing new error types through the
     /// stack while keeping testability (pure counter logic here).
     pub fn on_advance_error_flag(&mut self, err: &eyre::Report) -> bool {
         let s = err.to_string();
-        let dbg = format!("{:?}", err);
+        let dbg = format!("{err:?}");
         let is_invalid_new_payload = s.contains("Invalid payload")
             || s.contains("Invalid payload status")
             || dbg.contains("Invalid payload");
@@ -103,7 +103,7 @@ impl ResyncController {
     }
 
     /// Check if resync should be performed.
-    pub fn should_resync(&self) -> bool {
+    pub const fn should_resync(&self) -> bool {
         self.consecutive_invalid_new_payload >= self.cfg.invalid_new_payload_threshold
             || self.consecutive_invalid_fcu >= self.cfg.invalid_fcu_threshold
     }
@@ -128,7 +128,7 @@ impl ResyncController {
     }
 
     /// Returns the maximum number of headers to replay during resync.
-    pub fn max_replay(&self) -> usize { self.cfg.max_replay }
+    pub const fn max_replay(&self) -> usize { self.cfg.max_replay }
 }
 
 /// Execute the resync routine using the provided `LocalMiner`.

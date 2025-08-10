@@ -38,32 +38,32 @@ where
     B: PayloadAttributesBuilder<<T as PayloadTypes>::PayloadAttributes>,
     P: TransactionPool,
 {
-    // Get current system time with proper error handling
-    let current_time = std::time::SystemTime::now()
+    // Get current system time in milliseconds with proper error handling
+    let current_time_ms: u64 = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| (d.as_millis() as u128).min(u64::MAX as u128) as u64)
         .unwrap_or_else(|e| {
             error!(target: "engine::local", "System time error: {:?}, using last_timestamp + 1", e);
-            *last_timestamp + 1
+            *last_timestamp + 1 // keep monotonic progression in ms
         });
 
-    // Ensure timestamp always moves forward
-    let mut timestamp = std::cmp::max(*last_timestamp + 1, current_time);
-    const MAX_SKEW_SECS: u64 = 3600; // allow up to 1 hour into the future
-    if timestamp > current_time + MAX_SKEW_SECS {
+    // Ensure timestamp always moves forward (ms precision)
+    let mut timestamp = std::cmp::max(*last_timestamp + 1, current_time_ms);
+    const MAX_SKEW_MS: u64 = 600_000; // allow up to 10 minutes into the future (in ms) // for 1h : 3_600_000
+    if timestamp > current_time_ms + MAX_SKEW_MS {
         warn!(
             target: "engine::local",
-            "System clock appears to have jumped forward by more than {} s (ts={}, now={}), clamping to now+MAX_SKEW",
-            MAX_SKEW_SECS, timestamp, current_time
+            "System clock appears to have jumped forward by more than {} ms (ts={}, now={}), clamping to now+MAX_SKEW",
+            MAX_SKEW_MS, timestamp, current_time_ms
         );
-        timestamp = current_time + MAX_SKEW_SECS;
+        timestamp = current_time_ms + MAX_SKEW_MS;
     }
 
     // Sanity check: if timestamp jumps too far, log a warning
-    if *last_timestamp > 0 && timestamp > *last_timestamp + 3600 {
+    if *last_timestamp > 0 && timestamp > *last_timestamp + 600_000 { // for 1h : 3_600_000
         warn!(
             target: "engine::local",
-            "Large timestamp jump detected: {} -> {} (diff: {}s)",
+            "Large timestamp jump detected: {} -> {} (diff: {}ms)",
             *last_timestamp,
             timestamp,
             timestamp - *last_timestamp
@@ -149,7 +149,7 @@ where
     // Log successful block preparation
     info!(
         target: "engine::local",
-        "Prepared block with {} transactions, timestamp: {}",
+        "Prepared block with {} transactions, timestamp(ms): {}",
         tx_count,
         timestamp
     );

@@ -153,8 +153,11 @@ where
     }
 
     fn evm_env(&self, header: &Header) -> EvmEnv {
-        let blob_params = self.chain_spec().blob_params_at_timestamp(header.timestamp);
-        let spec = config::revm_spec(self.chain_spec(), header);
+        // Header timestamps are internal ms; convert to seconds for EVM/env and chain spec checks
+        let ts_secs = header.timestamp() / 1_000;
+        let blob_params = self.chain_spec().blob_params_at_timestamp(ts_secs);
+        let spec =
+            config::revm_spec_by_timestamp_and_block_number(self.chain_spec(), ts_secs, header.number());
 
         // configure evm env based on parent block
         let mut cfg_env =
@@ -175,7 +178,7 @@ where
         let block_env = BlockEnv {
             number: U256::from(header.number()),
             beneficiary: header.beneficiary(),
-            timestamp: U256::from(header.timestamp()),
+            timestamp: U256::from(ts_secs),
             difficulty: if spec >= SpecId::MERGE { U256::ZERO } else { header.difficulty() },
             prevrandao: if spec >= SpecId::MERGE { header.mix_hash() } else { None },
             gas_limit: header.gas_limit(),

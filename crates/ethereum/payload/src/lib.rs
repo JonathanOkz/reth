@@ -155,12 +155,15 @@ where
     let mut db =
         State::builder().with_database(cached_reads.as_db_mut(state)).with_bundle_update().build();
 
+    // attributes.timestamp is internal ms; convert to seconds for EVM/env and chain spec checks
+    let ts_secs = attributes.timestamp / 1_000;
+
     let mut builder = evm_config
         .builder_for_next_block(
             &mut db,
             &parent_header,
             NextBlockEnvAttributes {
-                timestamp: attributes.timestamp(),
+                timestamp: ts_secs,
                 suggested_fee_recipient: attributes.suggested_fee_recipient(),
                 prev_randao: attributes.prev_randao(),
                 gas_limit: builder_config.gas_limit(parent_header.gas_limit),
@@ -194,7 +197,8 @@ where
 
     let mut block_blob_count = 0;
 
-    let blob_params = chain_spec.blob_params_at_timestamp(attributes.timestamp);
+    // Chain spec timestamp-based params expect seconds
+    let blob_params = chain_spec.blob_params_at_timestamp(ts_secs);
     let max_blob_count =
         blob_params.as_ref().map(|params| params.max_blob_count).unwrap_or_default();
 
@@ -250,7 +254,7 @@ where
                     break 'sidecar Err(Eip4844PoolTransactionError::MissingEip4844BlobSidecar)
                 };
 
-                if chain_spec.is_osaka_active_at_timestamp(attributes.timestamp) {
+                if chain_spec.is_osaka_active_at_timestamp(ts_secs) {
                     if sidecar.is_eip7594() {
                         Ok(sidecar)
                     } else {
@@ -330,7 +334,7 @@ where
     let BlockBuilderOutcome { execution_result, block, .. } = builder.finish(&state_provider)?;
 
     let requests = chain_spec
-        .is_prague_active_at_timestamp(attributes.timestamp)
+        .is_prague_active_at_timestamp(ts_secs)
         .then_some(execution_result.requests);
 
     let sealed_block = Arc::new(block.sealed_block().clone());

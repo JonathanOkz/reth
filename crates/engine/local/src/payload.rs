@@ -28,17 +28,22 @@ where
     ChainSpec: Send + Sync + EthereumHardforks + 'static,
 {
     fn build(&self, timestamp: u64) -> EthPayloadAttributes {
+        // The input `timestamp` is in milliseconds. Convert to seconds at the Engine API boundary
+        // and for chain spec fork checks.
+        let ts_secs = timestamp / 1_000;
+
         EthPayloadAttributes {
-            timestamp,
+            // Store internal attributes timestamp in milliseconds
+            timestamp: timestamp,
             prev_randao: B256::random(), // keccak256([timestamp.to_be_bytes().as_slice(), keccak256(self.chain_spec.genesis_hash().as_slice()).as_slice()].concat()),
             suggested_fee_recipient: Address::ZERO,
             withdrawals: self
                 .chain_spec
-                .is_shanghai_active_at_timestamp(timestamp)
+                .is_shanghai_active_at_timestamp(ts_secs)
                 .then(Default::default),
             parent_beacon_block_root: self
                 .chain_spec
-                .is_cancun_active_at_timestamp(timestamp)
+                .is_cancun_active_at_timestamp(ts_secs)
                 .then(B256::random),
         }
     }

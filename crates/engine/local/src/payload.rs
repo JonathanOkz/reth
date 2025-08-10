@@ -1,8 +1,8 @@
 //! The implementation of the [`PayloadAttributesBuilder`] for the
 //! [`LocalMiner`](super::LocalMiner).
 
-use alloy_primitives::{keccak256, Address, B256};
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
+use alloy_primitives::{Address, B256};
+use reth_chainspec::EthereumHardforks;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_payload_primitives::PayloadAttributesBuilder;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ where
     fn build(&self, timestamp: u64) -> EthPayloadAttributes {
         EthPayloadAttributes {
             timestamp,
-            prev_randao: keccak256([timestamp.to_be_bytes().as_slice(), keccak256(self.chain_spec.genesis_hash().as_slice()).as_slice()].concat()),
+            prev_randao: B256::random(), // keccak256([timestamp.to_be_bytes().as_slice(), keccak256(self.chain_spec.genesis_hash().as_slice()).as_slice()].concat()),
             suggested_fee_recipient: Address::ZERO,
             withdrawals: self
                 .chain_spec

@@ -86,21 +86,23 @@ where
         })
     }
 
+    let ts_sec = sealed_block.timestamp / 1_000;
+
     shanghai::ensure_well_formed_fields(
         sealed_block.body(),
-        chain_spec.is_shanghai_active_at_timestamp(sealed_block.timestamp),
+        chain_spec.is_shanghai_active_at_timestamp(ts_sec),
     )?;
 
     cancun::ensure_well_formed_fields(
         &sealed_block,
         sidecar.cancun(),
-        chain_spec.is_cancun_active_at_timestamp(sealed_block.timestamp),
+        chain_spec.is_cancun_active_at_timestamp(ts_sec),
     )?;
 
     prague::ensure_well_formed_fields(
         sealed_block.body(),
         sidecar.prague(),
-        chain_spec.is_prague_active_at_timestamp(sealed_block.timestamp),
+        chain_spec.is_prague_active_at_timestamp(ts_sec),
     )?;
 
     Ok(sealed_block)

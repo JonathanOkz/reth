@@ -153,8 +153,11 @@ where
     }
 
     fn evm_env(&self, header: &Header) -> EvmEnv {
-        let blob_params = self.chain_spec().blob_params_at_timestamp(header.timestamp);
-        let spec = config::revm_spec(self.chain_spec(), header);
+        // convert ms -> s for chainspec/spec lookups
+        let ts_sec = header.timestamp / 1_000;
+        let blob_params = self.chain_spec().blob_params_at_timestamp(ts_sec);
+        let spec =
+            revm_spec_by_timestamp_and_block_number(self.chain_spec(), ts_sec, header.number());
 
         // configure evm env based on parent block
         let mut cfg_env =
@@ -193,12 +196,11 @@ where
     ) -> Result<EvmEnv, Self::Error> {
         // ensure we're not missing any timestamp based hardforks
         let chain_spec = self.chain_spec();
-        let blob_params = chain_spec.blob_params_at_timestamp(attributes.timestamp);
-        let spec_id = revm_spec_by_timestamp_and_block_number(
-            chain_spec,
-            attributes.timestamp,
-            parent.number() + 1,
-        );
+        // convert ms -> s for chainspec/spec lookups
+        let ts_sec = attributes.timestamp / 1_000;
+        let blob_params = chain_spec.blob_params_at_timestamp(ts_sec);
+        let spec_id =
+            revm_spec_by_timestamp_and_block_number(chain_spec, ts_sec, parent.number() + 1);
 
         // configure evm env based on parent block
         let mut cfg =
@@ -219,7 +221,8 @@ where
                 BlobExcessGasAndPrice { excess_blob_gas, blob_gasprice }
             });
 
-        let mut basefee = chain_spec.next_block_base_fee(parent, attributes.timestamp);
+        // convert ms -> s for chainspec API
+        let mut basefee = chain_spec.next_block_base_fee(parent, attributes.timestamp / 1_000);
 
         let mut gas_limit = attributes.gas_limit;
 
@@ -229,7 +232,8 @@ where
         {
             let elasticity_multiplier = self
                 .chain_spec()
-                .base_fee_params_at_timestamp(attributes.timestamp)
+                // convert ms -> s for chainspec API
+                .base_fee_params_at_timestamp(attributes.timestamp / 1_000)
                 .elasticity_multiplier;
 
             // multiply the gas limit by the elasticity multiplier
@@ -298,9 +302,11 @@ where
         let timestamp = payload.payload.timestamp();
         let block_number = payload.payload.block_number();
 
-        let blob_params = self.chain_spec().blob_params_at_timestamp(timestamp);
+        // convert ms -> s for chainspec/spec lookups
+        let ts_sec = timestamp / 1_000;
+        let blob_params = self.chain_spec().blob_params_at_timestamp(ts_sec);
         let spec =
-            revm_spec_by_timestamp_and_block_number(self.chain_spec(), timestamp, block_number);
+            revm_spec_by_timestamp_and_block_number(self.chain_spec(), ts_sec, block_number);
 
         // configure evm env based on parent block
         let mut cfg_env =

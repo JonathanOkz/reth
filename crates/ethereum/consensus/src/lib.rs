@@ -56,12 +56,13 @@ impl<ChainSpec: EthChainSpec + EthereumHardforks> EthBeaconConsensus<ChainSpec> 
         parent: &SealedHeader<H>,
     ) -> Result<(), ConsensusError> {
         // Determine the parent gas limit, considering elasticity multiplier on the London fork.
+        let header_secs = header.timestamp() / 1000;
         let parent_gas_limit = if !self.chain_spec.is_london_active_at_block(parent.number()) &&
             self.chain_spec.is_london_active_at_block(header.number())
         {
             parent.gas_limit() *
                 self.chain_spec
-                    .base_fee_params_at_timestamp(header.timestamp())
+                    .base_fee_params_at_timestamp(header_secs)
                     .elasticity_multiplier as u64
         } else {
             parent.gas_limit()
@@ -137,6 +138,7 @@ where
 {
     fn validate_header(&self, header: &SealedHeader<H>) -> Result<(), ConsensusError> {
         let header = header.header();
+        let ts_secs = header.timestamp() / 1000;
         let is_post_merge = self.chain_spec.is_paris_active_at_block(header.number());
 
         if is_post_merge {
@@ -159,11 +161,11 @@ where
                     .unwrap()
                     .as_secs();
 
-                if header.timestamp() >
+                if ts_secs >
                     present_timestamp + alloy_eips::merge::ALLOWED_FUTURE_BLOCK_TIME_SECONDS
                 {
                     return Err(ConsensusError::TimestampIsInFuture {
-                        timestamp: header.timestamp(),
+                        timestamp: ts_secs,
                         present_timestamp,
                     });
                 }
@@ -174,22 +176,22 @@ where
         validate_header_base_fee(header, &self.chain_spec)?;
 
         // EIP-4895: Beacon chain push withdrawals as operations
-        if self.chain_spec.is_shanghai_active_at_timestamp(header.timestamp()) &&
+        if self.chain_spec.is_shanghai_active_at_timestamp(ts_secs) &&
             header.withdrawals_root().is_none()
         {
             return Err(ConsensusError::WithdrawalsRootMissing)
-        } else if !self.chain_spec.is_shanghai_active_at_timestamp(header.timestamp()) &&
+        } else if !self.chain_spec.is_shanghai_active_at_timestamp(ts_secs) &&
             header.withdrawals_root().is_some()
         {
             return Err(ConsensusError::WithdrawalsRootUnexpected)
         }
 
         // Ensures that EIP-4844 fields are valid once cancun is active.
-        if self.chain_spec.is_cancun_active_at_timestamp(header.timestamp()) {
+        if self.chain_spec.is_cancun_active_at_timestamp(ts_secs) {
             validate_4844_header_standalone(
                 header,
                 self.chain_spec
-                    .blob_params_at_timestamp(header.timestamp())
+                    .blob_params_at_timestamp(ts_secs)
                     .unwrap_or_else(BlobParams::cancun),
             )?;
         } else if header.blob_gas_used().is_some() {
@@ -200,7 +202,7 @@ where
             return Err(ConsensusError::ParentBeaconBlockRootUnexpected)
         }
 
-        if self.chain_spec.is_prague_active_at_timestamp(header.timestamp()) {
+        if self.chain_spec.is_prague_active_at_timestamp(ts_secs) {
             if header.requests_hash().is_none() {
                 return Err(ConsensusError::RequestsHashMissing)
             }
@@ -230,8 +232,9 @@ where
             &self.chain_spec,
         )?;
 
+        let ts_secs = header.timestamp() / 1000;
         // ensure that the blob gas fields for this block
-        if let Some(blob_params) = self.chain_spec.blob_params_at_timestamp(header.timestamp()) {
+        if let Some(blob_params) = self.chain_spec.blob_params_at_timestamp(ts_secs) {
             validate_against_parent_4844(header.header(), parent.header(), blob_params)?;
         }
 

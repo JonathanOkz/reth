@@ -1,8 +1,8 @@
 //! The implementation of the [`PayloadAttributesBuilder`] for the
 //! [`LocalMiner`](super::LocalMiner).
 
-use alloy_primitives::{Address, B256};
-use reth_chainspec::EthereumHardforks;
+use alloy_primitives::{keccak256, Address, B256};
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_payload_primitives::PayloadAttributesBuilder;
 use std::sync::Arc;
@@ -25,20 +25,22 @@ impl<ChainSpec> LocalPayloadAttributesBuilder<ChainSpec> {
 impl<ChainSpec> PayloadAttributesBuilder<EthPayloadAttributes>
     for LocalPayloadAttributesBuilder<ChainSpec>
 where
-    ChainSpec: Send + Sync + EthereumHardforks + 'static,
+    ChainSpec: Send + Sync + EthereumHardforks + EthChainSpec + 'static,
 {
     fn build(&self, timestamp: u64) -> EthPayloadAttributes {
+        // Convert milliseconds to seconds for chain spec checks
+        let ts_sec = timestamp / 1_000;
         EthPayloadAttributes {
             timestamp,
-            prev_randao: B256::random(),
-            suggested_fee_recipient: Address::random(),
+            prev_randao: keccak256([timestamp.to_be_bytes().as_slice(), keccak256(self.chain_spec.genesis_hash().as_slice()).as_slice()].concat()),
+            suggested_fee_recipient: Address::ZERO,
             withdrawals: self
                 .chain_spec
-                .is_shanghai_active_at_timestamp(timestamp)
+                .is_shanghai_active_at_timestamp(ts_sec)
                 .then(Default::default),
             parent_beacon_block_root: self
                 .chain_spec
-                .is_cancun_active_at_timestamp(timestamp)
+                .is_cancun_active_at_timestamp(ts_sec)
                 .then(B256::random),
         }
     }

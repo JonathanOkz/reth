@@ -122,7 +122,7 @@ where
                     std::time::SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
-                        .as_secs(),
+                        .as_millis() as u64,
                     HeadHistory::new(Some(genesis_hash)),
                 )
             }

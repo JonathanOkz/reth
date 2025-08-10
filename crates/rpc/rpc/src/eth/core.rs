@@ -609,7 +609,7 @@ mod tests {
         let last_header = last_header.unwrap();
         let spec = mock_provider.chain_spec();
         base_fees_per_gas.push(
-            spec.next_block_base_fee(&last_header, last_header.timestamp).unwrap_or_default()
+            spec.next_block_base_fee(&last_header, last_header.timestamp / 1_000).unwrap_or_default()
                 as u128,
         );
 

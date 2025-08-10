@@ -38,32 +38,32 @@ where
     B: PayloadAttributesBuilder<<T as PayloadTypes>::PayloadAttributes>,
     P: TransactionPool,
 {
-    // Get current system time with proper error handling
+    // Get current system time in milliseconds with proper error handling
     let current_time = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or_else(|e| {
-            error!(target: "engine::local", "System time error: {:?}, using last_timestamp + 1", e);
+            error!(target: "engine::local", "System time error: {:?}, using last_timestamp + 1ms", e);
             *last_timestamp + 1
         });
 
-    // Ensure timestamp always moves forward
+    // Ensure timestamp always moves forward (milliseconds)
     let mut timestamp = std::cmp::max(*last_timestamp + 1, current_time);
-    const MAX_SKEW_SECS: u64 = 3600; // allow up to 1 hour into the future
-    if timestamp > current_time + MAX_SKEW_SECS {
+    const MAX_SKEW_MS: u64 = 3_600_000; // allow up to 1 hour into the future
+    if timestamp > current_time + MAX_SKEW_MS {
         warn!(
             target: "engine::local",
-            "System clock appears to have jumped forward by more than {} s (ts={}, now={}), clamping to now+MAX_SKEW",
-            MAX_SKEW_SECS, timestamp, current_time
+            "System clock appears to have jumped forward by more than {} ms (ts={}, now={}), clamping to now+MAX_SKEW",
+            MAX_SKEW_MS, timestamp, current_time
         );
-        timestamp = current_time + MAX_SKEW_SECS;
+        timestamp = current_time + MAX_SKEW_MS;
     }
 
     // Sanity check: if timestamp jumps too far, log a warning
-    if *last_timestamp > 0 && timestamp > *last_timestamp + 3600 {
+    if *last_timestamp > 0 && timestamp > *last_timestamp + 3_600_000 {
         warn!(
             target: "engine::local",
-            "Large timestamp jump detected: {} -> {} (diff: {}s)",
+            "Large timestamp jump detected: {} -> {} (diff: {}ms)",
             *last_timestamp,
             timestamp,
             timestamp - *last_timestamp

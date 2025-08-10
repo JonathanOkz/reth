@@ -195,7 +195,7 @@ where
             // calculate basefee based on parent block's gas usage
             basefee: self
                 .chain_spec()
-                .next_block_base_fee(parent, attributes.timestamp)
+                .next_block_base_fee(parent, attributes.timestamp / 1_000)
                 .unwrap_or_default(),
             // calculate excess gas based on parent block's blob gas usage
             blob_excess_gas_and_price,

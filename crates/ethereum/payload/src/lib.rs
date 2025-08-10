@@ -194,7 +194,9 @@ where
 
     let mut block_blob_count = 0;
 
-    let blob_params = chain_spec.blob_params_at_timestamp(attributes.timestamp);
+    // convert ms -> s for chainspec API
+    let ts_sec = attributes.timestamp / 1_000;
+    let blob_params = chain_spec.blob_params_at_timestamp(ts_sec);
     let max_blob_count =
         blob_params.as_ref().map(|params| params.max_blob_count).unwrap_or_default();
 
@@ -250,7 +252,7 @@ where
                     break 'sidecar Err(Eip4844PoolTransactionError::MissingEip4844BlobSidecar)
                 };
 
-                if chain_spec.is_osaka_active_at_timestamp(attributes.timestamp) {
+                if chain_spec.is_osaka_active_at_timestamp(ts_sec) {
                     if sidecar.is_eip7594() {
                         Ok(sidecar)
                     } else {
@@ -330,7 +332,7 @@ where
     let BlockBuilderOutcome { execution_result, block, .. } = builder.finish(&state_provider)?;
 
     let requests = chain_spec
-        .is_prague_active_at_timestamp(attributes.timestamp)
+        .is_prague_active_at_timestamp(ts_sec)
         .then_some(execution_result.requests);
 
     let sealed_block = Arc::new(block.sealed_block().clone());

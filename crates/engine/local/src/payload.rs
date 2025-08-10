@@ -1,8 +1,8 @@
 //! The implementation of the [`PayloadAttributesBuilder`] for the
 //! [`LocalMiner`](super::LocalMiner).
 
-use alloy_primitives::{Address, B256};
-use reth_chainspec::EthereumHardforks;
+use alloy_primitives::{keccak256, Address, B256};
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_payload_primitives::PayloadAttributesBuilder;
 use std::sync::Arc;

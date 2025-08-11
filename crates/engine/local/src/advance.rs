@@ -29,7 +29,7 @@ pub async fn build_and_submit_block<T, B, P>(
     pool: &P,
     metrics: &LocalMinerMetrics,
     head_history: &mut HeadHistory,
-    last_timestamp: &mut u64,
+    last_timestamp_ms: &mut u64,
     adaptive: &mut AdaptiveTarget,
     burst_interval_ms: u64,
 ) -> eyre::Result<()>
@@ -43,12 +43,12 @@ where
         .duration_since(UNIX_EPOCH)
         .map(|d| (d.as_millis() as u128).min(u64::MAX as u128) as u64)
         .unwrap_or_else(|e| {
-            error!(target: "engine::local", "System time error: {:?}, using last_timestamp + 1", e);
-            *last_timestamp + 1 // keep monotonic progression in ms
+            error!(target: "engine::local", "System time error: {:?}, using last_timestamp_ms + 1", e);
+            *last_timestamp_ms + 1 // keep monotonic progression in ms
         });
 
     // Ensure timestamp always moves forward (ms precision)
-    let mut timestamp_ms = std::cmp::max(*last_timestamp + 1, current_time_ms);
+    let mut timestamp_ms = std::cmp::max(*last_timestamp_ms + 1, current_time_ms);
     const MAX_SKEW_MS: u64 = 600_000; // allow up to 10 minutes into the future (in ms)
     if timestamp_ms > current_time_ms + MAX_SKEW_MS {
         warn!(
@@ -60,30 +60,25 @@ where
     }
 
     // Sanity check: warn on large jumps
-    if *last_timestamp > 0 && timestamp_ms > *last_timestamp + 600_000 {
+    if *last_timestamp_ms > 0 && timestamp_ms > *last_timestamp_ms + 600_000 {
         warn!(
             target: "engine::local",
             "Large timestamp jump detected: {} -> {} (diff: {}ms)",
-            *last_timestamp,
+            *last_timestamp_ms,
             timestamp_ms,
-            timestamp_ms - *last_timestamp
+            timestamp_ms - *last_timestamp_ms
         );
     }
 
     // ---------------------------------------------------------------------
     // Convert to *seconds* for the engine and enforce strict monotonicity
     // ---------------------------------------------------------------------
-    let mut timestamp = timestamp_ms / 1_000; // floor division
-    let last_secs = *last_timestamp / 1_000;
-    if timestamp <= last_secs {
-        timestamp = last_secs + 1;
-    }
 
     // FCU with attributes to kick off payload build
     let res = to_engine
         .fork_choice_updated(
             head_history.state(),
-            Some(payload_attributes_builder.build(timestamp)),
+            Some(payload_attributes_builder.build(timestamp_ms)),
             EngineApiMessageVersion::default(),
         )
         .await?;
@@ -177,7 +172,7 @@ where
     // Update adaptive estimator with actual gas usage of this block
     adaptive.on_mined_block(block.gas_used(), tx_count);
 
-    *last_timestamp = timestamp_ms;
+    *last_timestamp_ms = timestamp_ms;
 
     // Metrics: utilization & pending tx gauges
     let gas_limit = block.gas_limit();

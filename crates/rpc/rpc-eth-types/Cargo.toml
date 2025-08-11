@@ -27,6 +27,7 @@ reth-rpc-convert.workspace = true
 reth-tasks.workspace = true
 reth-transaction-pool.workspace = true
 reth-trie.workspace = true
+reth-primitives.workspace = true
 
 # ethereum
 alloy-eips.workspace = true

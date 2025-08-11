@@ -153,7 +153,7 @@ where
     }
 
     fn evm_env(&self, header: &Header) -> EvmEnv {
-        let blob_params = self.chain_spec().blob_params_at_timestamp(header.timestamp);
+        let blob_params = self.chain_spec().blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(header.timestamp));
         let spec = config::revm_spec(self.chain_spec(), header);
 
         // configure evm env based on parent block
@@ -298,9 +298,9 @@ where
         let timestamp = payload.payload.timestamp();
         let block_number = payload.payload.block_number();
 
-        let blob_params = self.chain_spec().blob_params_at_timestamp(timestamp);
+        let blob_params = self.chain_spec().blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
         let spec =
-            revm_spec_by_timestamp_and_block_number(self.chain_spec(), timestamp, block_number);
+            revm_spec_by_timestamp_and_block_number(self.chain_spec(), reth_primitives::time::normalize_timestamp_to_seconds(timestamp), block_number);
 
         // configure evm env based on parent block
         let mut cfg_env =

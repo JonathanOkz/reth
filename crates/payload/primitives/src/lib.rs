@@ -78,7 +78,7 @@ pub fn validate_payload_timestamp(
     version: EngineApiMessageVersion,
     timestamp: u64,
 ) -> Result<(), EngineObjectValidationError> {
-    let is_cancun = chain_spec.is_cancun_active_at_timestamp(timestamp);
+    let is_cancun = chain_spec.is_cancun_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
     if version.is_v2() && is_cancun {
         // From the Engine API spec:
         //
@@ -122,7 +122,7 @@ pub fn validate_payload_timestamp(
         return Err(EngineObjectValidationError::UnsupportedFork)
     }
 
-    let is_prague = chain_spec.is_prague_active_at_timestamp(timestamp);
+    let is_prague = chain_spec.is_prague_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
     if version.is_v4() && !is_prague {
         // From the Engine API spec:
         // <https://github.com/ethereum/execution-apis/blob/7907424db935b93c2fe6a3c0faab943adebe8557/src/engine/prague.md#specification-1>
@@ -145,7 +145,7 @@ pub fn validate_payload_timestamp(
         return Err(EngineObjectValidationError::UnsupportedFork)
     }
 
-    let is_osaka = chain_spec.is_osaka_active_at_timestamp(timestamp);
+    let is_osaka = chain_spec.is_osaka_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
     if version.is_v5() && !is_osaka {
         // From the Engine API spec:
         // <https://github.com/ethereum/execution-apis/blob/15399c2e2f16a5f800bf3f285640357e2c245ad9/src/engine/osaka.md#specification>
@@ -170,7 +170,7 @@ pub fn validate_withdrawals_presence<T: EthereumHardforks>(
     timestamp: u64,
     has_withdrawals: bool,
 ) -> Result<(), EngineObjectValidationError> {
-    let is_shanghai_active = chain_spec.is_shanghai_active_at_timestamp(timestamp);
+    let is_shanghai_active = chain_spec.is_shanghai_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
 
     match version {
         EngineApiMessageVersion::V1 => {

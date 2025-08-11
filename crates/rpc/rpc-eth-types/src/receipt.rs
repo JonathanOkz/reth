@@ -98,7 +98,7 @@ where
 
         for input in inputs {
             let tx_type = input.receipt.tx_type;
-            let blob_params = self.chain_spec.blob_params_at_timestamp(input.meta.timestamp);
+            let blob_params = self.chain_spec.blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(input.meta.timestamp));
             receipts.push(build_receipt(&input, blob_params, |receipt_with_bloom| {
                 ReceiptEnvelope::from_typed(tx_type, receipt_with_bloom)
             }));

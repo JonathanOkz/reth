@@ -966,14 +966,14 @@ impl<Client> EthTransactionValidatorBuilder<Client> {
     where
         Client: ChainSpecProvider<ChainSpec: EthereumHardforks>,
     {
-        self.shanghai = self.client.chain_spec().is_shanghai_active_at_timestamp(timestamp);
-        self.cancun = self.client.chain_spec().is_cancun_active_at_timestamp(timestamp);
-        self.prague = self.client.chain_spec().is_prague_active_at_timestamp(timestamp);
-        self.osaka = self.client.chain_spec().is_osaka_active_at_timestamp(timestamp);
+        self.shanghai = self.client.chain_spec().is_shanghai_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
+        self.cancun = self.client.chain_spec().is_cancun_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
+        self.prague = self.client.chain_spec().is_prague_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
+        self.osaka = self.client.chain_spec().is_osaka_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
         self.max_blob_count = self
             .client
             .chain_spec()
-            .blob_params_at_timestamp(timestamp)
+            .blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp))
             .unwrap_or_else(BlobParams::cancun)
             .max_blobs_per_tx;
         self

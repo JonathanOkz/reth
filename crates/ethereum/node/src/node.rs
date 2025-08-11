@@ -444,7 +444,9 @@ where
                 SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
             let blob_params = ctx
                 .chain_spec()
-                .blob_params_at_timestamp(current_timestamp)
+                .blob_params_at_timestamp(
+                    reth_primitives::time::normalize_timestamp_to_seconds(current_timestamp),
+                )
                 .unwrap_or_else(BlobParams::cancun);
 
             // Derive the blob cache size from the target blob count, to auto scale it by

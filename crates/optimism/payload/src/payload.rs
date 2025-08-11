@@ -394,10 +394,10 @@ where
         parent: &SealedHeader<H>,
         chain_spec: &ChainSpec,
     ) -> Result<Self, PayloadBuilderError> {
-        let extra_data = if chain_spec.is_holocene_active_at_timestamp(attributes.timestamp()) {
+        let extra_data = if chain_spec.is_holocene_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp())) {
             attributes
                 .get_holocene_extra_data(
-                    chain_spec.base_fee_params_at_timestamp(attributes.timestamp()),
+                    chain_spec.base_fee_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp())),
                 )
                 .map_err(PayloadBuilderError::other)?
         } else {

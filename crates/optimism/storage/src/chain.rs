@@ -100,7 +100,7 @@ where
 
         for (header, transactions) in inputs {
             let mut withdrawals = None;
-            if chain_spec.is_shanghai_active_at_timestamp(header.timestamp()) {
+            if chain_spec.is_shanghai_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(header.timestamp())) {
                 // after shanghai the body should have an empty withdrawals list
                 withdrawals.replace(vec![].into());
             }

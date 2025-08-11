@@ -135,7 +135,7 @@ where
         state_updates: &HashedPostState,
         block: &RecoveredBlock<Self::Block>,
     ) -> Result<(), ConsensusError> {
-        if self.chain_spec().is_isthmus_active_at_timestamp(block.timestamp()) {
+        if self.chain_spec().is_isthmus_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(block.timestamp())) {
             let Ok(state) = self.provider.state_by_block_hash(block.parent_hash()) else {
                 // FIXME: we don't necessarily have access to the parent block here because the
                 // parent block isn't necessarily part of the canonical chain yet. Instead this

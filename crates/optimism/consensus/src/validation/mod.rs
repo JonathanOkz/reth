@@ -54,7 +54,7 @@ where
         (Some(header_withdrawals_root), Some(withdrawals_root)) => {
             // after isthmus, the withdrawals root field is repurposed and no longer mirrors the
             // withdrawals root computed from the body
-            if chain_spec.is_isthmus_active_at_timestamp(header.timestamp()) {
+            if chain_spec.is_isthmus_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(header.timestamp())) {
                 // After isthmus we only ensure that the body has empty withdrawals
                 if withdrawals_root != EMPTY_ROOT_HASH {
                     return Err(ConsensusError::BodyWithdrawalsRootDiff(

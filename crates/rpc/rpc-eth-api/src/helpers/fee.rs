@@ -161,7 +161,7 @@ pub trait EthFees:
                 base_fee_per_gas.push(
                     self.provider()
                         .chain_spec()
-                        .next_block_base_fee(&last_entry.header, last_entry.header.timestamp())
+                        .next_block_base_fee(&last_entry.header, reth_primitives::time::normalize_timestamp_to_seconds(last_entry.header.timestamp()))
                         .unwrap_or_default() as u128,
                 );
 
@@ -181,7 +181,7 @@ pub trait EthFees:
                     gas_used_ratio.push(header.gas_used() as f64 / header.gas_limit() as f64);
 
                     let blob_params = chain_spec
-                        .blob_params_at_timestamp(header.timestamp())
+                        .blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(header.timestamp()))
                         .unwrap_or_else(BlobParams::cancun);
 
                     base_fee_per_blob_gas.push(header.blob_fee(blob_params).unwrap_or_default());
@@ -220,7 +220,7 @@ pub trait EthFees:
                 let last_header = headers.last().expect("is present");
                 base_fee_per_gas.push(
                     chain_spec
-                        .next_block_base_fee(last_header.header(), last_header.timestamp())
+                        .next_block_base_fee(last_header.header(), reth_primitives::time::normalize_timestamp_to_seconds(last_header.timestamp()))
                         .unwrap_or_default() as u128,
                 );
                 // Same goes for the `base_fee_per_blob_gas`:
@@ -228,7 +228,7 @@ pub trait EthFees:
                 base_fee_per_blob_gas.push(
                     last_header
                     .maybe_next_block_blob_fee(
-                        chain_spec.blob_params_at_timestamp(last_header.timestamp())
+                        chain_spec.blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(last_header.timestamp()))
                     ).unwrap_or_default()
                 );
             };

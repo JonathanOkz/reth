@@ -178,11 +178,11 @@ where
     }
 
     // EIP-4895: Beacon chain push withdrawals as operations
-    if chain_spec.is_shanghai_active_at_timestamp(block.timestamp()) {
+    if chain_spec.is_shanghai_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(block.timestamp())) {
         validate_shanghai_withdrawals(block)?;
     }
 
-    if chain_spec.is_cancun_active_at_timestamp(block.timestamp()) {
+    if chain_spec.is_cancun_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(block.timestamp())) {
         validate_cancun_gas(block)?;
     }
 
@@ -283,7 +283,7 @@ pub fn validate_against_parent_eip1559_base_fee<ChainSpec: EthChainSpec + Ethere
             alloy_eips::eip1559::INITIAL_BASE_FEE
         } else {
             chain_spec
-                .next_block_base_fee(parent, header.timestamp())
+                .next_block_base_fee(parent, reth_primitives::time::normalize_timestamp_to_seconds(header.timestamp()))
                 .ok_or(ConsensusError::BaseFeeMissing)?
         };
         if expected_base_fee != base_fee {

@@ -17,6 +17,7 @@ reth-chainspec.workspace = true
 reth-consensus-common.workspace = true
 reth-primitives-traits.workspace = true
 reth-consensus.workspace = true
+reth-primitives.workspace = true
 
 # alloy
 alloy-eips.workspace = true
@@ -37,6 +38,7 @@ std = [
     "reth-ethereum-primitives/std",
     "reth-execution-types/std",
     "reth-primitives-traits/std",
+    "reth-primitives/std",
     "tracing/std",
 ]
 

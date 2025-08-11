@@ -221,7 +221,7 @@ pub trait LoadPendingBlock:
         let blob_params = self
             .provider()
             .chain_spec()
-            .blob_params_at_timestamp(parent.timestamp())
+            .blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(parent.timestamp()))
             .unwrap_or_else(BlobParams::cancun);
         let mut cumulative_gas_used = 0;
         let mut sum_blob_gas_used = 0;

@@ -193,10 +193,10 @@ where
     ) -> Result<EvmEnv, Self::Error> {
         // ensure we're not missing any timestamp based hardforks
         let chain_spec = self.chain_spec();
-        let blob_params = chain_spec.blob_params_at_timestamp(attributes.timestamp);
+        let blob_params = chain_spec.blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp));
         let spec_id = revm_spec_by_timestamp_and_block_number(
             chain_spec,
-            attributes.timestamp,
+            reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp),
             parent.number() + 1,
         );
 
@@ -219,7 +219,7 @@ where
                 BlobExcessGasAndPrice { excess_blob_gas, blob_gasprice }
             });
 
-        let mut basefee = chain_spec.next_block_base_fee(parent, attributes.timestamp);
+        let mut basefee = chain_spec.next_block_base_fee(parent, reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp));
 
         let mut gas_limit = attributes.gas_limit;
 
@@ -229,7 +229,7 @@ where
         {
             let elasticity_multiplier = self
                 .chain_spec()
-                .base_fee_params_at_timestamp(attributes.timestamp)
+                .base_fee_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp))
                 .elasticity_multiplier;
 
             // multiply the gas limit by the elasticity multiplier
@@ -242,7 +242,7 @@ where
         let block_env = BlockEnv {
             number: U256::from(parent.number + 1),
             beneficiary: attributes.suggested_fee_recipient,
-            timestamp: U256::from(attributes.timestamp),
+            timestamp: U256::from(reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp)),
             difficulty: U256::ZERO,
             prevrandao: Some(attributes.prev_randao),
             gas_limit,

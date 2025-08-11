@@ -15,6 +15,7 @@ workspace = true
 reth-chainspec.workspace = true
 reth-evm = { workspace = true, features = ["op"] }
 reth-primitives-traits.workspace = true
+reth-primitives.workspace = true
 reth-execution-errors.workspace = true
 reth-execution-types.workspace = true
 reth-storage-errors.workspace = true
@@ -58,6 +59,7 @@ std = [
     "alloy-genesis/std",
     "alloy-primitives/std",
     "reth-primitives-traits/std",
+    "reth-primitives/std",
     "revm/std",
     "reth-optimism-primitives/std",
     "reth-optimism-forks/std",

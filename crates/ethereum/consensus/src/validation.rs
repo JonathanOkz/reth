@@ -51,7 +51,7 @@ where
     }
 
     // Validate that the header requests hash matches the calculated requests hash
-    if chain_spec.is_prague_active_at_timestamp(block.header().timestamp()) {
+    if chain_spec.is_prague_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(block.header().timestamp())) {
         let Some(header_requests_hash) = block.header().requests_hash() else {
             return Err(ConsensusError::RequestsHashMissing)
         };

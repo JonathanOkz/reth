@@ -19,6 +19,7 @@ reth-optimism-primitives = { workspace = true, features = ["serde", "reth-codec"
 reth-storage-api = { workspace = true, features = ["db-api"] }
 reth-db-api.workspace = true
 reth-provider.workspace = true
+reth-primitives.workspace = true
 
 # ethereum
 alloy-primitives.workspace = true
@@ -40,4 +41,5 @@ std = [
     "reth-chainspec/std",
     "reth-optimism-primitives/std",
     "reth-primitives-traits/std",
+    "reth-primitives/std",
 ]

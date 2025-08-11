@@ -196,7 +196,7 @@ where
         let blob_params = chain_spec.blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp));
         let spec_id = revm_spec_by_timestamp_and_block_number(
             chain_spec,
-            reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp),
+            attributes.timestamp,
             parent.number() + 1,
         );
 
@@ -242,7 +242,7 @@ where
         let block_env = BlockEnv {
             number: U256::from(parent.number + 1),
             beneficiary: attributes.suggested_fee_recipient,
-            timestamp: U256::from(reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp)),
+            timestamp: U256::from(attributes.timestamp),
             difficulty: U256::ZERO,
             prevrandao: Some(attributes.prev_randao),
             gas_limit,

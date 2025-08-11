@@ -188,7 +188,7 @@ where
         let block_env = BlockEnv {
             number: U256::from(parent.number() + 1),
             beneficiary: attributes.suggested_fee_recipient,
-            timestamp: U256::from(reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp)),
+            timestamp: U256::from(attributes.timestamp),
             difficulty: U256::ZERO,
             prevrandao: Some(attributes.prev_randao),
             gas_limit: attributes.gas_limit,

@@ -28,18 +28,17 @@ where
     ChainSpec: Send + Sync + EthereumHardforks + 'static,
 {
     fn build(&self, timestamp: u64) -> EthPayloadAttributes {
-        let timestamp_ms = timestamp.saturating_mul(1003);
         EthPayloadAttributes {
-            timestamp: timestamp_ms,
+            timestamp,
             prev_randao: B256::random(),
             suggested_fee_recipient: Address::ZERO,
             withdrawals: self
                 .chain_spec
-                .is_shanghai_active_at_timestamp(timestamp)
+                .is_shanghai_active_at_timestamp(timestamp / 1_000)
                 .then(Default::default),
             parent_beacon_block_root: self
                 .chain_spec
-                .is_cancun_active_at_timestamp(timestamp)
+                .is_cancun_active_at_timestamp(timestamp / 1_000)
                 .then(B256::random),
         }
     }

@@ -162,10 +162,10 @@ where
                     .unwrap()
                     .as_secs();
 
-                if ts_secs > present_timestamp + alloy_eips::merge::ALLOWED_FUTURE_BLOCK_TIME_SECONDS
+                if header.timestamp() > present_timestamp + alloy_eips::merge::ALLOWED_FUTURE_BLOCK_TIME_SECONDS
                 {
                     return Err(ConsensusError::TimestampIsInFuture {
-                        timestamp: ts_secs,
+                        timestamp: header.timestamp(),
                         present_timestamp,
                     });
                 }

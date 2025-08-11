@@ -161,20 +161,20 @@ impl OpReceiptFieldsBuilder {
 
         self.l1_fee = Some(
             l1_block_info
-                .l1_tx_data_fee(chain_spec, timestamp, &raw_tx, tx.is_deposit())
+                .l1_tx_data_fee(chain_spec, reth_primitives::time::normalize_timestamp_to_seconds(timestamp), &raw_tx, tx.is_deposit())
                 .map_err(|_| OpEthApiError::L1BlockFeeError)?
                 .saturating_to(),
         );
 
         self.l1_data_gas = Some(
             l1_block_info
-                .l1_data_gas(chain_spec, timestamp, &raw_tx)
+                .l1_data_gas(chain_spec, reth_primitives::time::normalize_timestamp_to_seconds(timestamp), &raw_tx)
                 .map_err(|_| OpEthApiError::L1BlockGasError)?
                 .saturating_add(l1_block_info.l1_fee_overhead.unwrap_or_default())
                 .saturating_to(),
         );
 
-        self.l1_fee_scalar = (!chain_spec.is_ecotone_active_at_timestamp(timestamp))
+        self.l1_fee_scalar = (!chain_spec.is_ecotone_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp)))
             .then_some(f64::from(l1_block_info.l1_base_fee_scalar) / 1_000_000.0);
 
         self.l1_base_fee = Some(l1_block_info.l1_base_fee.saturating_to());

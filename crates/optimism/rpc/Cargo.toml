@@ -27,6 +27,7 @@ reth-node-api.workspace = true
 reth-node-builder.workspace = true
 reth-chainspec.workspace = true
 reth-rpc-engine-api.workspace = true
+reth-primitives = { workspace = true, features = ["std"] }
 
 # op-reth
 reth-optimism-evm.workspace = true

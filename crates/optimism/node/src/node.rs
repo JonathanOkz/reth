@@ -881,7 +881,7 @@ where
         let Self { pool_config_overrides, .. } = self;
 
         // supervisor used for interop
-        if ctx.chain_spec().is_interop_active_at_timestamp(ctx.head().timestamp) &&
+        if ctx.chain_spec().is_interop_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(ctx.head().timestamp)) &&
             self.supervisor_http == DEFAULT_SUPERVISOR_URL
         {
             info!(target: "reth::cli",
@@ -927,7 +927,7 @@ where
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
 
         // The Op txpool maintenance task is only spawned when interop is active
-        if ctx.chain_spec().is_interop_active_at_timestamp(ctx.head().timestamp) &&
+        if ctx.chain_spec().is_interop_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(ctx.head().timestamp)) &&
             self.supervisor_http == DEFAULT_SUPERVISOR_URL
         {
             // spawn the Op txpool maintenance task

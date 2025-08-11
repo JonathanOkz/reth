@@ -297,7 +297,7 @@ impl EthChainSpec for OpChainSpec {
     }
 
     fn next_block_base_fee(&self, parent: &Header, target_timestamp: u64) -> Option<u64> {
-        if self.is_holocene_active_at_timestamp(parent.timestamp()) {
+        if self.is_holocene_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(parent.timestamp())) {
             decode_holocene_base_fee(self, parent, target_timestamp).ok()
         } else {
             self.inner.next_block_base_fee(parent, target_timestamp)

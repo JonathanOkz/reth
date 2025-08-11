@@ -364,7 +364,7 @@ where
                 .map_err(Self::Error::from_eth_err)?
                 .and_then(|h| {
                     h.maybe_next_block_blob_fee(
-                        self.provider().chain_spec().blob_params_at_timestamp(h.timestamp()),
+                        self.provider().chain_spec().blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(h.timestamp())),
                     )
                 })
                 .ok_or(EthApiError::ExcessBlobGasNotSet.into())

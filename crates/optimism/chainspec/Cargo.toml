@@ -16,6 +16,7 @@ workspace = true
 reth-chainspec.workspace = true
 reth-ethereum-forks.workspace = true
 reth-primitives-traits.workspace = true
+reth-primitives.workspace = true
 reth-network-peers.workspace = true
 
 # op-reth
@@ -61,6 +62,7 @@ std = [
     "reth-chainspec/std",
     "reth-ethereum-forks/std",
     "reth-primitives-traits/std",
+    "reth-primitives/std",
     "reth-optimism-forks/std",
     "reth-optimism-primitives/std",
     "alloy-consensus/std",

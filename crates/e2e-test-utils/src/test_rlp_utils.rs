@@ -75,7 +75,7 @@ pub fn generate_test_blocks(chain_spec: &ChainSpec, count: u64) -> Vec<SealedBlo
                     parent_gas_used,
                     parent_gas_limit,
                     parent_fee,
-                    chain_spec.base_fee_params_at_timestamp(header.timestamp),
+                    chain_spec.base_fee_params_at_timestamp(header.timestamp / 1_000),
                 ));
                 debug!(target: "e2e::import", "Block {} calculated base fee: {:?} (parent gas used: {}, parent gas limit: {}, parent base fee: {})",
                     i, header.base_fee_per_gas, parent_gas_used, parent_gas_limit, parent_fee);
@@ -90,12 +90,12 @@ pub fn generate_test_blocks(chain_spec: &ChainSpec, count: u64) -> Vec<SealedBlo
         }
 
         // For post-shanghai blocks
-        if chain_spec.is_shanghai_active_at_timestamp(header.timestamp) {
+        if chain_spec.is_shanghai_active_at_timestamp(header.timestamp / 1_000) {
             header.withdrawals_root = Some(EMPTY_WITHDRAWALS);
         }
 
         // For post-cancun blocks
-        if chain_spec.is_cancun_active_at_timestamp(header.timestamp) {
+        if chain_spec.is_cancun_active_at_timestamp(header.timestamp / 1_000) {
             header.blob_gas_used = Some(0);
             header.excess_blob_gas = Some(0);
             header.parent_beacon_block_root = Some(B256::ZERO);

@@ -736,24 +736,25 @@ where
 
     fn on_new_head_block<T: BlockHeader>(&self, new_tip_block: &T) {
         // update all forks
-        if self.chain_spec().is_shanghai_active_at_timestamp(new_tip_block.timestamp()) {
+        let ts_secs = new_tip_block.timestamp() / 1_000;
+        if self.chain_spec().is_shanghai_active_at_timestamp(ts_secs) {
             self.fork_tracker.shanghai.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
-        if self.chain_spec().is_cancun_active_at_timestamp(new_tip_block.timestamp()) {
+        if self.chain_spec().is_cancun_active_at_timestamp(ts_secs) {
             self.fork_tracker.cancun.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
-        if self.chain_spec().is_prague_active_at_timestamp(new_tip_block.timestamp()) {
+        if self.chain_spec().is_prague_active_at_timestamp(ts_secs) {
             self.fork_tracker.prague.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
-        if self.chain_spec().is_osaka_active_at_timestamp(new_tip_block.timestamp()) {
+        if self.chain_spec().is_osaka_active_at_timestamp(ts_secs) {
             self.fork_tracker.osaka.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
         if let Some(blob_params) =
-            self.chain_spec().blob_params_at_timestamp(new_tip_block.timestamp())
+            self.chain_spec().blob_params_at_timestamp(ts_secs)
         {
             self.fork_tracker
                 .max_blob_count
@@ -966,14 +967,15 @@ impl<Client> EthTransactionValidatorBuilder<Client> {
     where
         Client: ChainSpecProvider<ChainSpec: EthereumHardforks>,
     {
-        self.shanghai = self.client.chain_spec().is_shanghai_active_at_timestamp(timestamp);
-        self.cancun = self.client.chain_spec().is_cancun_active_at_timestamp(timestamp);
-        self.prague = self.client.chain_spec().is_prague_active_at_timestamp(timestamp);
-        self.osaka = self.client.chain_spec().is_osaka_active_at_timestamp(timestamp);
+        let ts_secs = timestamp / 1_000;
+        self.shanghai = self.client.chain_spec().is_shanghai_active_at_timestamp(ts_secs);
+        self.cancun = self.client.chain_spec().is_cancun_active_at_timestamp(ts_secs);
+        self.prague = self.client.chain_spec().is_prague_active_at_timestamp(ts_secs);
+        self.osaka = self.client.chain_spec().is_osaka_active_at_timestamp(ts_secs);
         self.max_blob_count = self
             .client
             .chain_spec()
-            .blob_params_at_timestamp(timestamp)
+            .blob_params_at_timestamp(ts_secs)
             .unwrap_or_else(BlobParams::cancun)
             .max_blobs_per_tx;
         self

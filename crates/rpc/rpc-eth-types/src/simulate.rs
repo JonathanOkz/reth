@@ -241,7 +241,7 @@ where
                             transaction_index: Some(index as u64),
                             transaction_hash: Some(*tx.tx_hash()),
                             block_number: Some(block.header().number()),
-                            block_timestamp: Some(block.header().timestamp()),
+                            block_timestamp: Some(block.header().timestamp() / 1_000),
                             ..Default::default()
                         }
                     })

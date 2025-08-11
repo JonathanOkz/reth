@@ -99,8 +99,9 @@ async fn test_fee_history() -> eyre::Result<()> {
             .header;
         for block in (latest_block + 2 - block_count)..=latest_block {
             let header = provider.get_block_by_number(block.into()).await?.unwrap().header;
-            let expected_base_fee =
-                chain_spec.next_block_base_fee(&prev_header, header.timestamp).unwrap();
+            let expected_base_fee = chain_spec
+                .next_block_base_fee(&prev_header, header.timestamp / 1_000)
+                .unwrap();
 
             assert_eq!(header.base_fee_per_gas.unwrap(), expected_base_fee);
             assert_eq!(

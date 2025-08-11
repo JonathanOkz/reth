@@ -477,7 +477,7 @@ where
                     block_num_hash,
                     &receipts,
                     false,
-                    header.timestamp(),
+                    header.timestamp() / 1_000,
                 )?;
 
                 Ok(all_logs)
@@ -639,7 +639,7 @@ where
                 num_hash,
                 &receipts,
                 false,
-                header.timestamp(),
+                header.timestamp() / 1_000,
             )?;
 
             // size check but only if range is multiple blocks, so we always return all

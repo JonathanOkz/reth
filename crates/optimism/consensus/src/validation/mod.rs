@@ -99,7 +99,7 @@ pub fn validate_block_post_execution<R: DepositReceipt>(
             header.logs_bloom(),
             receipts,
             chain_spec,
-            header.timestamp(),
+            reth_primitives::time::normalize_timestamp_to_seconds(header.timestamp()),
         ) {
             let receipts = receipts
                 .iter()

@@ -35,21 +35,21 @@ pub fn revm_spec_by_timestamp_after_bedrock(
     chain_spec: impl OpHardforks,
     timestamp: u64,
 ) -> OpSpecId {
-    if chain_spec.is_interop_active_at_timestamp(timestamp) {
+    if chain_spec.is_interop_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp)) {
         OpSpecId::INTEROP
-    } else if chain_spec.is_isthmus_active_at_timestamp(timestamp) {
+    } else if chain_spec.is_isthmus_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp)) {
         OpSpecId::ISTHMUS
-    } else if chain_spec.is_holocene_active_at_timestamp(timestamp) {
+    } else if chain_spec.is_holocene_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp)) {
         OpSpecId::HOLOCENE
-    } else if chain_spec.is_granite_active_at_timestamp(timestamp) {
+    } else if chain_spec.is_granite_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp)) {
         OpSpecId::GRANITE
-    } else if chain_spec.is_fjord_active_at_timestamp(timestamp) {
+    } else if chain_spec.is_fjord_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp)) {
         OpSpecId::FJORD
-    } else if chain_spec.is_ecotone_active_at_timestamp(timestamp) {
+    } else if chain_spec.is_ecotone_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp)) {
         OpSpecId::ECOTONE
-    } else if chain_spec.is_canyon_active_at_timestamp(timestamp) {
+    } else if chain_spec.is_canyon_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp)) {
         OpSpecId::CANYON
-    } else if chain_spec.is_regolith_active_at_timestamp(timestamp) {
+    } else if chain_spec.is_regolith_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp)) {
         OpSpecId::REGOLITH
     } else {
         OpSpecId::BEDROCK

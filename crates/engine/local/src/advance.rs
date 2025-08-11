@@ -49,33 +49,25 @@ where
 
     // Ensure timestamp always moves forward
     let mut timestamp = std::cmp::max(*last_timestamp + 1, current_time);
-    const MAX_SKEW_MS: u64 = 3600_000; // allow up to 1 hour into the future
+    const MAX_SKEW_MS: u64 = 60_000; // allow up to 1 minute into the future
     if timestamp > current_time + MAX_SKEW_MS {
         warn!(
             target: "engine::local",
-            "System clock appears to have jumped forward by more than {} ms (ts={}, now={}), clamping to now+MAX_SKEW",
-            MAX_SKEW_MS, timestamp, current_time
-        );
-        timestamp = current_time + MAX_SKEW_MS;
-    }
-
-    // Sanity check: if timestamp jumps too far, log a warning
-    if *last_timestamp > 0 && timestamp > *last_timestamp + MAX_SKEW_MS {
-        warn!(
-            target: "engine::local",
-            "Large timestamp jump detected: {} -> {} (diff: {}s)",
-            *last_timestamp,
+            "Clock ahead by > {} ms (ts={}, now={}). Skipping mining until wall-clock catches up",
+            MAX_SKEW_MS,
             timestamp,
-            timestamp - *last_timestamp
+            current_time
         );
+        return Ok(());
     }
 
     warn!(
         target: "engine::local",
-        "timestamp ::::::::: {} -> {} -> {}",
+        "timestamp ::::::::: {} -> {} -> {} -> block time: {}ms",
         current_time,
         *last_timestamp,
-        timestamp
+        timestamp,
+        timestamp - *last_timestamp
     );
 
     // FCU with attributes to kick off payload build

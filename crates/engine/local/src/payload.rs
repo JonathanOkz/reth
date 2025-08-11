@@ -28,8 +28,9 @@ where
     ChainSpec: Send + Sync + EthereumHardforks + 'static,
 {
     fn build(&self, timestamp: u64) -> EthPayloadAttributes {
+        let timestamp_ms = timestamp.saturating_mul(1003);
         EthPayloadAttributes {
-            timestamp,
+            timestamp: timestamp_ms,
             prev_randao: B256::random(),
             suggested_fee_recipient: Address::ZERO,
             withdrawals: self

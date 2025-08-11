@@ -160,7 +160,7 @@ where
             &mut db,
             &parent_header,
             NextBlockEnvAttributes {
-                timestamp: reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp()),
+                timestamp: attributes.timestamp(),
                 suggested_fee_recipient: attributes.suggested_fee_recipient(),
                 prev_randao: attributes.prev_randao(),
                 gas_limit: builder_config.gas_limit(parent_header.gas_limit),

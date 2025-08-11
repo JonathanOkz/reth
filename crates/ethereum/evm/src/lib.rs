@@ -196,7 +196,7 @@ where
         let blob_params = chain_spec.blob_params_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp));
         let spec_id = revm_spec_by_timestamp_and_block_number(
             chain_spec,
-            attributes.timestamp,
+            reth_primitives::time::normalize_timestamp_to_seconds(attributes.timestamp),
             parent.number() + 1,
         );
 

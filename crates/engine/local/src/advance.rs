@@ -48,26 +48,35 @@ where
         });
 
     // Ensure timestamp always moves forward (ms precision)
-    let mut timestamp = std::cmp::max(*last_timestamp + 1, current_time_ms);
-    const MAX_SKEW_MS: u64 = 600_000; // allow up to 10 minutes into the future (in ms) // for 1h : 3_600_000
-    if timestamp > current_time_ms + MAX_SKEW_MS {
+    let mut timestamp_ms = std::cmp::max(*last_timestamp + 1, current_time_ms);
+    const MAX_SKEW_MS: u64 = 600_000; // allow up to 10 minutes into the future (in ms)
+    if timestamp_ms > current_time_ms + MAX_SKEW_MS {
         warn!(
             target: "engine::local",
             "System clock appears to have jumped forward by more than {} ms (ts={}, now={}), clamping to now+MAX_SKEW",
-            MAX_SKEW_MS, timestamp, current_time_ms
+            MAX_SKEW_MS, timestamp_ms, current_time_ms
         );
-        timestamp = current_time_ms + MAX_SKEW_MS;
+        timestamp_ms = current_time_ms + MAX_SKEW_MS;
     }
 
-    // Sanity check: if timestamp jumps too far, log a warning
-    if *last_timestamp > 0 && timestamp > *last_timestamp + 600_000 { // for 1h : 3_600_000
+    // Sanity check: warn on large jumps
+    if *last_timestamp > 0 && timestamp_ms > *last_timestamp + 600_000 {
         warn!(
             target: "engine::local",
             "Large timestamp jump detected: {} -> {} (diff: {}ms)",
             *last_timestamp,
-            timestamp,
-            timestamp - *last_timestamp
+            timestamp_ms,
+            timestamp_ms - *last_timestamp
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Convert to *seconds* for the engine and enforce strict monotonicity
+    // ---------------------------------------------------------------------
+    let mut timestamp = timestamp_ms / 1_000; // floor division
+    let last_secs = *last_timestamp / 1_000;
+    if timestamp <= last_secs {
+        timestamp = last_secs + 1;
     }
 
     // FCU with attributes to kick off payload build
@@ -151,7 +160,7 @@ where
         target: "engine::local",
         "Prepared block with {} transactions, timestamp(ms): {}",
         tx_count,
-        timestamp
+        timestamp_ms
     );
 
     let payload = T::block_to_payload(payload.block().clone());
@@ -168,7 +177,7 @@ where
     // Update adaptive estimator with actual gas usage of this block
     adaptive.on_mined_block(block.gas_used(), tx_count);
 
-    *last_timestamp = timestamp;
+    *last_timestamp = timestamp_ms;
 
     // Metrics: utilization & pending tx gauges
     let gas_limit = block.gas_limit();

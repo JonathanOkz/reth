@@ -218,7 +218,7 @@ where
 
         if self
             .chain_spec()
-            .is_holocene_active_at_timestamp(attributes.payload_attributes.timestamp)
+            .is_holocene_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(attributes.payload_attributes.timestamp))
         {
             let (elasticity, denominator) =
                 attributes.decode_eip_1559_params().ok_or_else(|| {
@@ -251,7 +251,7 @@ pub fn validate_withdrawals_presence(
     timestamp: u64,
     has_withdrawals: bool,
 ) -> Result<(), EngineObjectValidationError> {
-    let is_shanghai = chain_spec.is_canyon_active_at_timestamp(timestamp);
+    let is_shanghai = chain_spec.is_canyon_active_at_timestamp(reth_primitives::time::normalize_timestamp_to_seconds(timestamp));
 
     match version {
         EngineApiMessageVersion::V1 => {

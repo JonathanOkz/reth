@@ -41,7 +41,7 @@ where
     // Get current system time with proper error handling
     let current_time = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
+        .map(|d| d.as_secs())
         .unwrap_or_else(|e| {
             error!(target: "engine::local", "System time error: {:?}, using last_timestamp + 1", e);
             *last_timestamp + 1
@@ -49,12 +49,12 @@ where
 
     // Ensure timestamp always moves forward
     let mut timestamp = std::cmp::max(*last_timestamp + 1, current_time);
-    const MAX_SKEW_MS: u64 = 60_000; // allow up to 1 minute into the future
-    if timestamp > current_time + MAX_SKEW_MS {
+    const MAX_SKEW_SECS: u64 = 3600; // allow up to 1 hour into the future
+    if timestamp > current_time + MAX_SKEW_SECS {
         warn!(
             target: "engine::local",
-            "Clock ahead by > {} ms (ts={}, now={}). Skipping mining until wall-clock catches up",
-            MAX_SKEW_MS,
+            "Clock ahead by > {} s (ts={}, now={}). Skipping mining until wall-clock catches up",
+            MAX_SKEW_SECS,
             timestamp,
             current_time
         );
@@ -63,7 +63,7 @@ where
 
     warn!(
         target: "engine::local",
-        "timestamp ::::::::: {} -> {} -> {} -> block time: {}ms",
+        "timestamp ::::::::: {} -> {} -> {} -> block time: {}s",
         current_time,
         *last_timestamp,
         timestamp,

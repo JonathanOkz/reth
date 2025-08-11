@@ -34,11 +34,11 @@ where
             suggested_fee_recipient: Address::ZERO,
             withdrawals: self
                 .chain_spec
-                .is_shanghai_active_at_timestamp(timestamp / 1_000)
+                .is_shanghai_active_at_timestamp(timestamp)
                 .then(Default::default),
             parent_beacon_block_root: self
                 .chain_spec
-                .is_cancun_active_at_timestamp(timestamp / 1_000)
+                .is_cancun_active_at_timestamp(timestamp)
                 .then(B256::random),
         }
     }

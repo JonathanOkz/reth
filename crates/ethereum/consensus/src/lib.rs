@@ -220,16 +220,12 @@ where
     ) -> Result<(), ConsensusError> {
         validate_against_parent_hash_number(header.header(), parent)?;
 
-        // Ensure the child timestamp (seconds) is strictly greater than the parent timestamp (seconds)
-        {
-            let child_ts_secs = header.timestamp() / 1_000;
-            let parent_ts_secs = parent.timestamp() / 1_000;
-            if child_ts_secs <= parent_ts_secs {
-                return Err(ConsensusError::TimestampIsInPast {
-                    parent_timestamp: parent.timestamp(),
-                    timestamp: header.timestamp(),
-                });
-            }
+        // Ensure the child timestamp (milliseconds) is strictly greater than the parent timestamp
+        if header.timestamp() <= parent.timestamp() {
+            return Err(ConsensusError::TimestampIsInPast {
+                parent_timestamp: parent.timestamp(),
+                timestamp: header.timestamp(),
+            });
         }
 
         // TODO Check difficulty increment between parent and self

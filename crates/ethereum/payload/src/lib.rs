@@ -155,22 +155,21 @@ where
     let mut db =
         State::builder().with_database(cached_reads.as_db_mut(state)).with_bundle_update().build();
 
-    // attributes.timestamp is internal ms; convert to seconds for EVM/env and chain spec checks
-    // Ensure next block timestamp (in ms) is strictly greater than parent to satisfy
-    // consensus rules while preserving full millisecond precision.
+    // attributes.timestamp is internal ms; enforce strict monotonicity **in milliseconds**
+    // to avoid precision loss due to floor division when comparing seconds.
     let mut ts_ms = attributes.timestamp;
     if ts_ms <= parent_header.timestamp {
-        ts_ms = parent_header.timestamp + 1; // bump by 1 ms
+        ts_ms = parent_header.timestamp + 1; // ensure strictly greater than parent in ms
     }
 
-    // Derive seconds once for all chain-spec / EVM boundary uses.
+    // Derive seconds only for chain-spec checks and EVM env logic.
     let ts_secs = ts_ms / 1_000;
-
     let mut builder = evm_config
         .builder_for_next_block(
             &mut db,
             &parent_header,
             NextBlockEnvAttributes {
+                // Pass milliseconds as expected by downstream (EthEvmConfig converts to seconds)
                 timestamp: ts_ms,
                 suggested_fee_recipient: attributes.suggested_fee_recipient(),
                 prev_randao: attributes.prev_randao(),

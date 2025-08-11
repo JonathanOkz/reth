@@ -31,7 +31,7 @@ where
         EthPayloadAttributes {
             timestamp,
             prev_randao: B256::random(),
-            suggested_fee_recipient: Address::random(),
+            suggested_fee_recipient: Address::ZERO,
             withdrawals: self
                 .chain_spec
                 .is_shanghai_active_at_timestamp(timestamp)

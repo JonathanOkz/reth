@@ -74,7 +74,7 @@ where
             "Skipping mining: burst interval ({} ms) since parent extra_data timestamp not yet elapsed",
             burst_interval_ms,
         );
-        return Ok(());
+        // return Ok(());
     }
     
     // ---------------------------------------------------------------------

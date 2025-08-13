@@ -168,7 +168,8 @@ pub trait PayloadValidator<Types: PayloadTypes>: Send + Sync + Unpin + 'static {
         attr: &Types::PayloadAttributes,
         header: &<Self::Block as Block>::Header,
     ) -> Result<(), InvalidPayloadAttributesError> {
-        if attr.timestamp() <= header.timestamp() {
+        // Allow equality: only reject if strictly older than parent
+        if attr.timestamp() < header.timestamp() {
             return Err(InvalidPayloadAttributesError::InvalidTimestamp);
         }
         Ok(())

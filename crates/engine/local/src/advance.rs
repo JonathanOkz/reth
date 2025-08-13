@@ -94,15 +94,27 @@ where
         return Ok(());
     }
 
+    // ---------------------------------------------------------------------
+    // ----- Diagnostic log with parent extra_data details (BEGIN) -----
+    // ---------------------------------------------------------------------
+    let parent_ts_ms = head_history.parent_extra_timestamp_ms(provider);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let delta_ms = parent_ts_ms.map(|ts| now_ms.saturating_sub(ts));
+
     warn!(
         target: "engine::local",
-        "timestamp ::::::::: current_time:{} -> last_timestamp:{} -> timestamp:{} -> parent_extra_ts_ms:{:?} -> block time:{}s",
+        "timestamp ::::::::: current_time:{} -> last_timestamp:{} -> timestamp:{} -> parent_extra_ts_ms:{:?} -> delta_ms:{:?} -> miner:{:?}",
         current_time,
         *last_timestamp,
         timestamp,
-        head_history.parent_extra_timestamp_ms(provider),
-        timestamp - *last_timestamp
+        parent_ts_ms,
+        delta_ms,
+        head_history.parent_extra_miner_address(provider)
     );
+    // ----- Diagnostic log (END) -----
 
     // FCU with attributes to kick off payload build
     let res = to_engine

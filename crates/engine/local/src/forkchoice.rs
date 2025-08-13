@@ -26,49 +26,43 @@ impl HeadHistory {
     /// Extracts the millisecond timestamp embedded in the `extra_data` field of the
     /// parent (most recent) block header.
     ///
-    /// Returns `None` if:
-    /// * History is empty
-    /// * Header not found in provider
-    /// * `extra_data` shorter than 8 bytes (does not follow our convention)
+    /// Returns millisecond timestamp from `extra_data` or `0` if unavailable/invalid.
     #[inline]
-    pub fn parent_extra_timestamp_ms<P>(&self, provider: &P) -> Option<u64>
+    pub fn parent_extra_timestamp_ms<P>(&self, provider: &P) -> u64
     where
         P: reth_provider::HeaderProvider,
     {
-        let hash = self.last_hash()?;
-        let header = provider.header(&hash).ok()??;
+        let Some(hash) = self.last_hash() else { return 0; };
+        let Some(header) = provider.header(&hash).ok().flatten() else { return 0; };
         let extra = header.extra_data();
         if extra.len() < 8 {
-            trace!(target: "engine::local", "parent_extra_timestamp_ms: extra_data < 8 bytes, returning None");
-            return None;
+            trace!(target: "engine::local", "parent_extra_timestamp_ms: extra_data < 8 bytes, returning 0");
+            return 0;
         }
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&extra[..8]);
-        Some(u64::from_be_bytes(buf))
+        u64::from_be_bytes(buf)
     }
 
     /// Extracts the miner address (20 bytes) located at bytes 32‥52 of the
     /// `extra_data` field, following the `timestamp_ms‖address‖signature` layout.
     ///
-    /// Returns `None` if:
-    /// * history is empty
-    /// * header not found in provider
-    /// * `extra_data` is shorter than 52 bytes
+    /// Returns miner address found in `extra_data` or `Address::ZERO` if unavailable/invalid.
     #[inline]
-    pub fn parent_extra_miner_address<P>(&self, provider: &P) -> Option<Address>
+    pub fn parent_extra_miner_address<P>(&self, provider: &P) -> Address
     where
         P: reth_provider::HeaderProvider,
     {
-        let hash = self.last_hash()?;
-        let header = provider.header(&hash).ok()??;
+        let Some(hash) = self.last_hash() else { return Address::ZERO };    
+        let Some(header) = provider.header(&hash).ok().flatten() else { return Address::ZERO };
         let extra = header.extra_data();
         if extra.len() < 52 {
-            trace!(target: "engine::local", "parent_extra_miner_address: extra_data < 52 bytes, returning None");
-            return None;
+            trace!(target: "engine::local", "parent_extra_miner_address: extra_data < 52 bytes, returning ZERO");
+            return Address::ZERO;
         }
         let mut buf = [0u8; 20];
         buf.copy_from_slice(&extra[32..52]);
-        Some(Address::from_slice(&buf))
+        Address::from_slice(&buf)
     }
 
     /// Create a new history initialized with an optional first head.

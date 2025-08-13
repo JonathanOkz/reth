@@ -2,9 +2,6 @@
 
 use std::time::{Duration, UNIX_EPOCH};
 
-/// Maximum allowed clock skew between the local wall clock and any timestamp we
-const MAX_CLOCK_SKEW_MS: u64 = 60_000;
-
 use eyre::OptionExt;
 use tracing::{debug, error, info, warn};
 
@@ -24,18 +21,6 @@ use crate::metrics::LocalMinerMetrics;
 use alloy_consensus::{
     constants::MAXIMUM_EXTRA_DATA_SIZE
 };
-
-// ---------------------------------------------------------------------
-// Helper utilities
-// ---------------------------------------------------------------------
-
-/// Returns `true` if the absolute difference between the two millisecond timestamps
-/// exceeds [`MAX_CLOCK_SKEW_MS`]. Extracted so we can unit-test the policy in
-/// isolation.
-#[inline]
-fn exceeds_clock_skew(a_ms: u64, b_ms: u64) -> bool {
-    a_ms.abs_diff(b_ms) > MAX_CLOCK_SKEW_MS
-}
 
 /// Full block build-and-submit path previously implemented inside `LocalMiner::advance`.
 ///
@@ -60,61 +45,50 @@ where
     R: reth_provider::HeaderProvider,
 {
     // Get current system time with proper error handling
+    // Capture current wall-clock time once and derive seconds & milliseconds.
     let current_time = match std::time::SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(e) => {
+        Ok(d) => d, Err(e) => {
             error!(target: "engine::local", "System time error: {:?}, retrying later", e);
             return Ok(()); // block and retry later
         }
     };
 
-    // Ensure timestamp is non-decreasing (allow equality with parent)
-    let timestamp = std::cmp::max(*last_timestamp, current_time);
-    
-
-    // ---------------------------------------------------------------------
-    // Sanity-check local clock against timestamp in extra_data of parent block
-    // ---------------------------------------------------------------------
-    if let Some(parent_extra_ts_ms) = head_history.parent_extra_timestamp_ms(provider) {
-        let now_ms = current_time.saturating_mul(1000);
-        if exceeds_clock_skew(now_ms, parent_extra_ts_ms) {
-            let delta = now_ms.abs_diff(parent_extra_ts_ms);
-            warn!(target: "engine::local", delta_ms = delta, "Local clock differs from parent extra_data timestamp by > {} ms, skipping mining", MAX_CLOCK_SKEW_MS);
-            return Ok(());
-        }
-    }
-    // Reject if chosen timestamp drifts too far *into the future* relative to
-    // the local wall-clock.
-    let now_ms = current_time.saturating_mul(1000);
-    let ts_ms = timestamp.saturating_mul(1000);
-    if exceeds_clock_skew(ts_ms, now_ms) {
-        warn!(
+    // Exit if the local wall-clock time is earlier than the last known timestamp.
+    if current_time.as_secs() < *last_timestamp {
+        error!(
             target: "engine::local",
-            "Clock ahead by > {} ms (ts_ms={}, now_ms={}). Skipping mining until wall-clock catches up",
-            MAX_CLOCK_SKEW_MS,
-            ts_ms,
-            now_ms
+            "Clock is behind (current_time={}, last_timestamp={}). Skipping mining until wall-clock catches up",
+            current_time.as_secs(),
+            *last_timestamp
         );
         return Ok(());
     }
 
+    // Prevent mining bursts: ensure that at least `burst_interval_ms` has elapsed between the parent block extra_data timestamp (in ms) and the current wall-clock millisecond portion. If not, skip this mining attempt to respect the CLI option `--mine-burst-interval-ms`.
+    if head_history.parent_extra_timestamp_ms(provider) + burst_interval_ms > current_time.as_millis() as u64 {
+        warn!(
+            target: "engine::local",
+            parent_extra_ts_ms = head_history.parent_extra_timestamp_ms(provider),
+            burst_interval_ms,
+            now_sub_ms = current_time.as_millis(),
+            "Skipping mining: burst interval ({} ms) since parent extra_data timestamp not yet elapsed",
+            burst_interval_ms,
+        );
+        return Ok(());
+    }
+    
     // ---------------------------------------------------------------------
     // ----- Diagnostic log with parent extra_data details (BEGIN) -----
     // ---------------------------------------------------------------------
     let parent_ts_ms = head_history.parent_extra_timestamp_ms(provider);
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let delta_ms = parent_ts_ms.map(|ts| now_ms.saturating_sub(ts));
-
+    let delta_ms = current_time.as_millis().saturating_sub(parent_ts_ms as u128);
     warn!(
         target: "engine::local",
-        "timestamp ::::::::: MAXIMUM_EXTRA_DATA_SIZE:{} | current_time:{} -> last_timestamp:{} -> timestamp:{} -> parent_extra_ts_ms:{:?} -> delta_ms:{:?} -> miner:{:?}",
+        "timestamp ::::::::: MAXIMUM_EXTRA_DATA_SIZE:{} | current_time:{} s -> last_timestamp:{} s -> current_time:{} ms -> last_timestamp:{:?} ms -> delta_ms:{:?} -> miner:{:?}",
         MAXIMUM_EXTRA_DATA_SIZE,
-        current_time,
+        current_time.as_secs(),
         *last_timestamp,
-        timestamp,
+        current_time.as_millis(),
         parent_ts_ms,
         delta_ms,
         head_history.parent_extra_miner_address(provider)
@@ -125,7 +99,7 @@ where
     let res = to_engine
         .fork_choice_updated(
             head_history.state(),
-            Some(payload_attributes_builder.build(timestamp)),
+            Some(payload_attributes_builder.build(current_time.as_secs())),
             EngineApiMessageVersion::default(),
         )
         .await?;
@@ -202,7 +176,7 @@ where
         target: "engine::local",
         "Prepared block with {} transactions, timestamp: {}",
         tx_count,
-        timestamp
+        current_time.as_secs()
     );
 
     let payload = T::block_to_payload(payload.block().clone());
@@ -219,7 +193,7 @@ where
     // Update adaptive estimator with actual gas usage of this block
     adaptive.on_mined_block(block.gas_used(), tx_count);
 
-    *last_timestamp = timestamp;
+    *last_timestamp = current_time.as_secs();
 
     // Metrics: utilization & pending tx gauges
     let gas_limit = block.gas_limit();
@@ -243,30 +217,5 @@ where
     }
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clock_skew_within_bounds() {
-        // delta 30 secondes < MAX_CLOCK_SKEW_MS (1 min)
-        let now = 1_000_000u64;
-        let prev = now + 30 * 1000;
-        assert!(!exceeds_clock_skew(now, prev));
-    }
-
-    #[test]
-    fn clock_skew_exceeds_bounds() {
-        // delta 70 secondes > MAX_CLOCK_SKEW_MS
-        let now = 1_000_000u64;
-        let prev = now + 70 * 1000;
-        assert!(exceeds_clock_skew(now, prev));
-    }
 }
 

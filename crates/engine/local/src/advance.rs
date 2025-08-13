@@ -96,11 +96,11 @@ where
 
     warn!(
         target: "engine::local",
-        "timestamp ::::::::: current_time:{} -> last_timestamp:{} -> timestamp:{} -> parent_extra_ts_ms:{} -> block time:{}s",
+        "timestamp ::::::::: current_time:{} -> last_timestamp:{} -> timestamp:{} -> parent_extra_ts_ms:{:?} -> block time:{}s",
         current_time,
         *last_timestamp,
         timestamp,
-        parent_extra_ts_ms,
+        head_history.parent_extra_timestamp_ms(provider),
         timestamp - *last_timestamp
     );
 

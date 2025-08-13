@@ -21,6 +21,10 @@ use crate::adaptive_target::AdaptiveTarget;
 use crate::forkchoice::HeadHistory;
 use crate::metrics::LocalMinerMetrics;
 
+use alloy_consensus::{
+    constants::MAXIMUM_EXTRA_DATA_SIZE
+};
+
 // ---------------------------------------------------------------------
 // Helper utilities
 // ---------------------------------------------------------------------
@@ -106,7 +110,8 @@ where
 
     warn!(
         target: "engine::local",
-        "timestamp ::::::::: current_time:{} -> last_timestamp:{} -> timestamp:{} -> parent_extra_ts_ms:{:?} -> delta_ms:{:?} -> miner:{:?}",
+        "timestamp ::::::::: MAXIMUM_EXTRA_DATA_SIZE:{} | current_time:{} -> last_timestamp:{} -> timestamp:{} -> parent_extra_ts_ms:{:?} -> delta_ms:{:?} -> miner:{:?}",
+        MAXIMUM_EXTRA_DATA_SIZE,
         current_time,
         *last_timestamp,
         timestamp,

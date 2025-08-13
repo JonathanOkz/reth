@@ -17,7 +17,11 @@
 
 extern crate alloc;
 
+mod extra_data;
+
 use alloc::{borrow::Cow, sync::Arc};
+pub use signer_baas::{header_signer, miner_signer};
+pub use header_signer::HeaderSigner;
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::Decodable2718;
 pub use alloy_evm::EthEvm;
@@ -101,7 +105,8 @@ impl<ChainSpec, EvmFactory> EthEvmConfig<ChainSpec, EvmFactory> {
     /// Creates a new Ethereum EVM configuration with the given chain spec and EVM factory.
     pub fn new_with_evm_factory(chain_spec: Arc<ChainSpec>, evm_factory: EvmFactory) -> Self {
         Self {
-            block_assembler: EthBlockAssembler::new(chain_spec.clone()),
+            block_assembler: EthBlockAssembler::new(chain_spec.clone())
+                .with_signer(miner_signer::default_header_signer()),
             executor_factory: EthBlockExecutorFactory::new(
                 RethReceiptBuilder::default(),
                 chain_spec,

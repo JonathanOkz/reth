@@ -7910,6 +7910,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-engine-miner-baas"
+version = "1.6.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "eyre",
+ "futures-util",
+ "op-alloy-rpc-types-engine",
+ "reth-chainspec",
+ "reth-engine-primitives",
+ "reth-ethereum-engine-primitives",
+ "reth-metrics",
+ "reth-optimism-chainspec",
+ "reth-payload-builder",
+ "reth-payload-primitives",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-transaction-pool",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "reth-engine-primitives"
 version = "1.6.0"
 dependencies = [
@@ -8415,6 +8441,8 @@ dependencies = [
  "reth-testing-utils",
  "revm",
  "secp256k1 0.30.0",
+ "signer-baas",
+ "tracing",
 ]
 
 [[package]]
@@ -11742,6 +11770,17 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "signer-baas"
+version = "1.6.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "tracing",
 ]
 
 [[package]]

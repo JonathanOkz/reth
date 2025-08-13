@@ -11,7 +11,7 @@ extern crate alloc;
 
 use alloc::{sync::Arc, vec::Vec};
 
-#[cfg(feature = "std")] use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::Bytes;
 
@@ -28,24 +28,17 @@ pub(crate) fn build_extra_data(
     // ---------------------------------------------------------------------
     // 1. Millisecond timestamp (big-endian u64)
     // ---------------------------------------------------------------------
-    let timestamp_ms: u64 = {
-        #[cfg(feature = "std")]
-        {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                .min(u128::from(u64::MAX) as u128) as u64
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            // Fallback: no reliable clock in `no_std`; use 0 to signal "unknown seal time".
+    let timestamp_ms: u64 = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(dur) => dur
+            .as_millis()
+            .min(u128::from(u64::MAX) as u128) as u64,
+        Err(err) => {
+            tracing::error!(?err, "failed to read system time, defaulting extra_data timestamp_ms to 0");
             0
         }
     };
 
     // Warn if the ms timestamp diverges too much
-    #[cfg(feature = "std")]
     {
         let delta_ms = ((timestamp_ms as i128) - (_timestamp_secs as i128 * 1000)).abs();
         if delta_ms > 1_000 {

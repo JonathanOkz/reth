@@ -64,18 +64,18 @@ where
         return Ok(());
     }
 
-    // Prevent mining bursts: ensure that at least `burst_interval_ms` has elapsed between the parent block extra_data timestamp (in ms) and the current wall-clock millisecond portion. If not, skip this mining attempt to respect the CLI option `--mine-burst-interval-ms`.
-    if head_history.parent_extra_timestamp_ms(provider) + burst_interval_ms > current_time.as_millis() as u64 {
-        warn!(
-            target: "engine::local",
-            parent_extra_ts_ms = head_history.parent_extra_timestamp_ms(provider),
-            burst_interval_ms,
-            now_sub_ms = current_time.as_millis(),
-            "Skipping mining: burst interval ({} ms) since parent extra_data timestamp not yet elapsed",
-            burst_interval_ms,
-        );
-        // return Ok(());
-    }
+    // // Prevent mining bursts: ensure that at least `burst_interval_ms` has elapsed between the parent block extra_data timestamp (in ms) and the current wall-clock millisecond portion. If not, skip this mining attempt to respect the CLI option `--mine-burst-interval-ms`.
+    // if head_history.parent_extra_timestamp_ms(provider) + burst_interval_ms > current_time.as_millis() as u64 {
+    //     warn!(
+    //         target: "engine::local",
+    //         parent_extra_ts_ms = head_history.parent_extra_timestamp_ms(provider),
+    //         burst_interval_ms,
+    //         now_sub_ms = current_time.as_millis(),
+    //         "Skipping mining: burst interval ({} ms) since parent extra_data timestamp not yet elapsed",
+    //         burst_interval_ms,
+    //     );
+    //     // return Ok(());
+    // }
     
     // ---------------------------------------------------------------------
     // ----- Diagnostic log with parent extra_data details (BEGIN) -----

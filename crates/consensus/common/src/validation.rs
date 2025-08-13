@@ -233,17 +233,6 @@ pub fn validate_4844_header_standalone<H: BlockHeader>(
 #[inline]
 pub fn validate_header_extra_data<H: BlockHeader>(header: &H) -> Result<(), ConsensusError> {
     let extra_data_len = header.extra_data().len();
-
-    // ---------------------------------------------------------------------
-    // BaaS custom PoA: allow extended extra_data (timestamp‖address‖signature).
-    // Format length: 8 (timestamp) + 20 (addr) + 65 (sig) = 93 bytes.
-    // Accept anything up to 128 bytes to remain forward-compatible.
-    // ---------------------------------------------------------------------
-    if extra_data_len > MAXIMUM_EXTRA_DATA_SIZE && extra_data_len <= 128 {
-        // Bypass legacy 32-byte limit
-        return Ok(());
-    }
-
     if extra_data_len > MAXIMUM_EXTRA_DATA_SIZE {
         Err(ConsensusError::ExtraDataExceedsMax { len: extra_data_len })
     } else {

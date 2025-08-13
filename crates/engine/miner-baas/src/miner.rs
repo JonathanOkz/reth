@@ -1,4 +1,4 @@
-//! Contains the implementation of the mining mode for the local engine.
+//! Contains the implementation of the mining mode for the miner-baas engine.
 
 use crate::adaptive_target::{AdaptiveTarget, AdaptiveTargetConfig, GasAvgConfig, GasLimitConfig, TxBounds};
 use crate::{forkchoice::HeadHistory, metrics::MinerMetrics, mode::MiningMode};
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::switch_policy::ModeSwitchPolicy;
 use crate::resync::{ResyncController, ResyncConfig};
 
-/// Local miner advancing the chain
+/// BaaS miner advancing the chain
 #[derive(Debug)]
 pub struct Miner<T: PayloadTypes, B, P, R>
 where
@@ -95,7 +95,7 @@ where
         {
             Ok(Some(header)) => (header.timestamp(), HeadHistory::new(Some(header.hash()))),
             Ok(None) => {
-                warn!(target: "engine::local", "No best header – starting with current time");
+                warn!(target: "engine::miner-baas", "No best header – starting with current time");
                 let genesis_hash = provider
                     .sealed_header(0)
                     .ok()
@@ -111,7 +111,7 @@ where
                 )
             }
             Err(err) => {
-                warn!(target: "engine::local", ?err, "Error fetching best header – using defaults");
+                warn!(target: "engine::miner-baas", ?err, "Error fetching best header – using defaults");
                 let genesis_hash = provider
                     .sealed_header(0)
                     .ok()

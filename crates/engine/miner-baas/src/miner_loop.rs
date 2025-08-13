@@ -40,7 +40,7 @@ where
         let min_mine_interval = Duration::from_millis(50);
 
         info!(
-            target: "engine::local",
+            target: "engine::miner-baas",
             "Miner started: enter_burst_threshold={}, exit_burst_threshold={}, dwell_ms={}, burst_interval={}ms",
             self.policy.enter_burst_threshold,
             self.policy.exit_burst_threshold,
@@ -51,7 +51,7 @@ where
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    info!(target: "engine::local", "Shutdown signal received; stopping Miner loop");
+                    info!(target: "engine::miner-baas", "Shutdown signal received; stopping Miner loop");
                     break;
                 }
 
@@ -78,7 +78,7 @@ where
                         last_mine_attempt = now;
 
                         if let Err(e) = self.advance().await {
-                            error!(target: "engine::local", "Error advancing the chain: {:?}", e);
+                            error!(target: "engine::miner-baas", "Error advancing the chain: {:?}", e);
                             self.handle_error().await;
                             // If errors look like repeated invalid newPayload, trigger resync
                             let should = self.resync.on_advance_error_flag(&e);
@@ -102,7 +102,7 @@ where
                         last_mine_attempt = std::time::Instant::now();
 
                         if let Err(e) = self.advance().await {
-                            error!(target: "engine::local", "Error advancing the chain (burst): {:?}", e);
+                            error!(target: "engine::miner-baas", "Error advancing the chain (burst): {:?}", e);
                             self.handle_error().await;
                             // If errors look like repeated invalid newPayload, trigger resync
                             let should = self.resync.on_advance_error_flag(&e);
@@ -112,7 +112,7 @@ where
 
                             // Log successful burst mining
                             info!(
-                                target: "engine::local",
+                                target: "engine::miner-baas",
                                 "Burst mined block with {} pending transactions",
                                 pending as u64
                             );
@@ -128,7 +128,7 @@ where
                     let fcu_ok = match self.update_forkchoice_state().await {
                         Ok(()) => true,
                         Err(e) => {
-                            error!(target: "engine::local", "Error updating fork choice: {:?}", e);
+                            error!(target: "engine::miner-baas", "Error updating fork choice: {:?}", e);
                             false
                         }
                     };
@@ -140,7 +140,7 @@ where
             }
         }
 
-        info!(target: "engine::local", "Miner loop exited");
+        info!(target: "engine::miner-baas", "Miner loop exited");
     }
 
     /// Helper that toggles between `Instant` and `Debounced` modes based on pool size.
@@ -149,12 +149,12 @@ where
         if let Some(decision) = self.policy.should_switch(&self.mode, pending, self.last_mode_switch_at, now) {
             match decision {
                 SwitchDecision::ToDebounced => {
-                    info!(target: "engine::local", "Switching mining mode → Debounced (pending={}, enter_threshold={})", pending, self.policy.enter_burst_threshold);
+                    info!(target: "engine::miner-baas", "Switching mining mode → Debounced (pending={}, enter_threshold={})", pending, self.policy.enter_burst_threshold);
                     self.mode = MiningMode::debounced(self.pool.clone(), interval_ms.clamp(50, 500));
                     self.last_mode_switch_at = now;
                 }
                 SwitchDecision::ToInstant => {
-                    info!(target: "engine::local", "Switching mining mode → Instant (pending={}, exit_threshold={})", pending, self.policy.exit_burst_threshold);
+                    info!(target: "engine::miner-baas", "Switching mining mode → Instant (pending={}, exit_threshold={})", pending, self.policy.exit_burst_threshold);
                     self.mode = MiningMode::instant(self.pool.clone());
                     self.last_mode_switch_at = now;
                 }

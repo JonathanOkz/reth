@@ -21,7 +21,7 @@ pub async fn handle_with_backoff(
 
     // Cooldown after too many consecutive errors
     if *consecutive_errors > 10 {
-        error!(target: "engine::local", "Too many consecutive errors ({}), entering 60s cooldown", *consecutive_errors);
+        error!(target: "engine::miner-baas", "Too many consecutive errors ({}), entering 60s cooldown", *consecutive_errors);
         tokio::time::sleep(Duration::from_secs(60)).await;
         // reset error counter after cooldown
         *consecutive_errors = 0;
@@ -35,7 +35,7 @@ pub async fn handle_with_backoff(
     let capped_wait = std::cmp::min(wait_time, Duration::from_secs(30));
 
     warn!(
-        target: "engine::local",
+        target: "engine::miner-baas",
         "Error #{}, waiting {:?} before retry",
         *consecutive_errors,
         capped_wait

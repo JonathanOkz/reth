@@ -36,7 +36,7 @@ impl HeadHistory {
         let Some(header) = provider.header(&hash).ok().flatten() else { return 0; };
         let extra = header.extra_data();
         if extra.len() < 8 {
-            trace!(target: "engine::local", "parent_extra_timestamp_ms: extra_data < 8 bytes, returning 0");
+            trace!(target: "engine::miner-baas", "parent_extra_timestamp_ms: extra_data < 8 bytes, returning 0");
             return 0;
         }
         let mut buf = [0u8; 8];
@@ -57,7 +57,7 @@ impl HeadHistory {
         let Some(header) = provider.header(&hash).ok().flatten() else { return Address::ZERO };
         let extra = header.extra_data();
         if extra.len() < 52 {
-            trace!(target: "engine::local", "parent_extra_miner_address: extra_data < 52 bytes, returning ZERO");
+            trace!(target: "engine::miner-baas", "parent_extra_miner_address: extra_data < 52 bytes, returning ZERO");
             return Address::ZERO;
         }
         let mut buf = [0u8; 20];

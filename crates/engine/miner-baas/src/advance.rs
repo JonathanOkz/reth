@@ -48,7 +48,7 @@ where
     // Capture current wall-clock time once and derive seconds & milliseconds.
     let current_time = match std::time::SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(d) => d, Err(e) => {
-            error!(target: "engine::local", "System time error: {:?}, retrying later", e);
+            error!(target: "engine::miner-baas", "System time error: {:?}, retrying later", e);
             return Ok(()); // block and retry later
         }
     };
@@ -56,7 +56,7 @@ where
     // Exit if the local wall-clock time is earlier than the last known timestamp.
     if current_time.as_secs() < *last_timestamp {
         error!(
-            target: "engine::local",
+            target: "engine::miner-baas",
             "Clock is behind (current_time={}, last_timestamp={}). Skipping mining until wall-clock catches up",
             current_time.as_secs(),
             *last_timestamp
@@ -67,7 +67,7 @@ where
     // // Prevent mining bursts: ensure that at least `burst_interval_ms` has elapsed between the parent block extra_data timestamp (in ms) and the current wall-clock millisecond portion. If not, skip this mining attempt to respect the CLI option `--mine-burst-interval-ms`.
     // if head_history.parent_extra_timestamp_ms(provider) + burst_interval_ms > current_time.as_millis() as u64 {
     //     warn!(
-    //         target: "engine::local",
+    //         target: "engine::miner-baas",
     //         parent_extra_ts_ms = head_history.parent_extra_timestamp_ms(provider),
     //         burst_interval_ms,
     //         now_sub_ms = current_time.as_millis(),
@@ -83,7 +83,7 @@ where
     let parent_ts_ms = head_history.parent_extra_timestamp_ms(provider);
     let delta_ms = current_time.as_millis().saturating_sub(parent_ts_ms as u128);
     warn!(
-        target: "engine::local",
+        target: "engine::miner-baas",
         "timestamp ::::::::: MAXIMUM_EXTRA_DATA_SIZE:{} | current_time:{} s -> last_timestamp:{} s -> current_time:{} ms -> last_timestamp:{:?} ms -> delta_ms:{:?} -> miner:{:?}",
         MAXIMUM_EXTRA_DATA_SIZE,
         current_time.as_secs(),
@@ -167,13 +167,13 @@ where
     metrics.pending_txs_at_mine.set(tx_count as f64);
     if tx_count == 0 {
         // Log this as debug, not error - it's normal behavior
-        debug!(target: "engine::local", "Skipping empty block (no transactions)");
+        debug!(target: "engine::miner-baas", "Skipping empty block (no transactions)");
         return Ok(());
     }
 
     // Log successful block preparation
     info!(
-        target: "engine::local",
+        target: "engine::miner-baas",
         "Prepared block with {} transactions, timestamp: {}",
         tx_count,
         current_time.as_secs()
@@ -213,7 +213,7 @@ where
         .fork_choice_updated(head_history.state(), None, EngineApiMessageVersion::default())
         .await
     {
-        error!(target: "engine::local", "Error updating fork choice after new block: {:?}", e);
+        error!(target: "engine::miner-baas", "Error updating fork choice after new block: {:?}", e);
     }
 
     Ok(())

@@ -3,14 +3,14 @@
 
 use alloy_primitives::{address, Address, B256};
 
-/// Hard-coded beneficiary address matching the local miner signer.
-const LOCAL_MINER_BENEFICIARY: Address = address!("7E5F4552091A69125d5DfCb7b8C2659029395Bdf");
+/// Hard-coded beneficiary address matching the miner-baas signer.
+const MINER_BENEFICIARY: Address = address!("7E5F4552091A69125d5DfCb7b8C2659029395Bdf");
 use reth_chainspec::EthereumHardforks;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_payload_primitives::PayloadAttributesBuilder as PayloadAttributesBuilderTrait;
 use std::sync::Arc;
 
-/// The attributes builder for local Ethereum payload.
+/// The attributes builder for BaaS miner payload.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct PayloadAttributesBuilder<ChainSpec> {
@@ -34,7 +34,7 @@ where
         EthPayloadAttributes {
             timestamp,
             prev_randao: B256::random(),
-            suggested_fee_recipient: LOCAL_MINER_BENEFICIARY,
+            suggested_fee_recipient: MINER_BENEFICIARY,
             withdrawals: self
                 .chain_spec
                 .is_shanghai_active_at_timestamp(timestamp)

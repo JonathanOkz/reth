@@ -144,14 +144,14 @@ where
     if !miner.resync.start_if_due() { return; }
 
     let started = Instant::now();
-    warn!(target: "engine::local", "Resync starting (reason={})", reason);
+    warn!(target: "engine::miner-baas", "Resync starting (reason={})", reason);
 
     // Re-read best head and up to max_replay-1 previous heads
     let provider = &miner._provider;
     let best_num = match provider.best_block_number() {
         Ok(n) => n,
         Err(e) => {
-            error!(target: "engine::local", "Resync: failed to read best block number: {:?}", e);
+            error!(target: "engine::miner-baas", "Resync: failed to read best block number: {:?}", e);
             miner.resync.finish();
             return;
         }
@@ -171,14 +171,14 @@ where
             }
             Ok(None) => {}
             Err(e) => {
-                warn!(target: "engine::local", "Resync: error reading header {}: {:?}", n, e);
+                warn!(target: "engine::miner-baas", "Resync: error reading header {}: {:?}", n, e);
             }
         }
     }
 
     // Require that the history includes the current best head; otherwise skip applying state.
     if !had_head {
-        warn!(target: "engine::local", "Resync: failed to read best head {} ; skipping state apply", best_num);
+        warn!(target: "engine::miner-baas", "Resync: failed to read best head {} ; skipping state apply", best_num);
         miner.resync.finish();
         return;
     }
@@ -187,11 +187,11 @@ where
     miner.last_timestamp = miner.last_timestamp.max(last_ts);
     miner.head_history = history;
     if let Err(e) = miner.update_forkchoice_state().await {
-        error!(target: "engine::local", "Resync: FCU failed after refresh: {:?}", e);
+        error!(target: "engine::miner-baas", "Resync: FCU failed after refresh: {:?}", e);
     }
 
     // Mark done and log duration
     miner.resync.finish();
     let elapsed = started.elapsed();
-    info!(target: "engine::local", "Resync completed in {:?} (reason={})", elapsed, reason);
+    info!(target: "engine::miner-baas", "Resync completed in {:?} (reason={})", elapsed, reason);
 }

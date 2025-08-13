@@ -1,4 +1,4 @@
-//! A local engine service that can be used to drive a dev chain.
+//! BaaS miner engine service that can be used to drive a dev chain.
 
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
@@ -14,7 +14,7 @@ pub mod payload;
 pub mod adaptive_target;
 /// Mining trigger modes (instant/debounced).
 pub mod mode;
-/// Prometheus metrics for the local miner.
+/// Prometheus metrics for the baas miner.
 pub mod metrics;
 /// Forkchoice state and head history abstraction.
 pub mod forkchoice;

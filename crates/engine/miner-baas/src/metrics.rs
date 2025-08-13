@@ -6,7 +6,7 @@ use reth_metrics::{metrics::{Counter, Gauge, Histogram}, metrics, Metrics};
 
 /// Metrics for `Miner`.
 #[derive(Metrics, Clone)]
-#[metrics(scope = "local_miner")]
+#[metrics(scope = "miner_baas")]
 pub struct MinerMetrics {
     /// Counter for errors encountered while mining.
     pub miner_errors_total: Counter,

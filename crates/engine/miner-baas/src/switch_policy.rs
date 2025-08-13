@@ -2,7 +2,7 @@
 //!
 //! This module defines [`ModeSwitchPolicy`], a small, production-ready policy
 //! for deciding when to switch between `Instant` and `Debounced` mining modes
-//! in `LocalMiner`. It prevents rapid oscillations by using:
+//! in `Miner`. It prevents rapid oscillations by using:
 //! - Separate enter/exit thresholds (hysteresis)
 //! - A minimum dwell time between switches
 

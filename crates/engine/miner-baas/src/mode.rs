@@ -1,4 +1,4 @@
-//! Mining trigger modes used by `LocalMiner`.
+//! Mining trigger modes used by `Miner`.
 //! 
 //! This module provides an event-driven Instant mode (wakes on new pending tx)
 //! and a Debounced mode (merges bursts and emits at most one trigger per period).

@@ -7,7 +7,7 @@ use crate::{
 use alloy_primitives::B256;
 use eyre::Result;
 use jsonrpsee::http_client::HttpClient;
-use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_engine_miner_baas::LocalPayloadAttributesBuilder;
 use reth_node_api::{EngineTypes, NodeTypes, PayloadTypes};
 use reth_payload_builder::PayloadId;
 use std::{collections::HashMap, marker::PhantomData};

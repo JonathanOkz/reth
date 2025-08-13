@@ -9,7 +9,7 @@ use alloy_primitives::B256;
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes};
 use eyre::{eyre, Result};
 use reth_chainspec::ChainSpec;
-use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_engine_miner_baas::PayloadAttributesBuilder;
 use reth_ethereum_primitives::Block;
 use reth_network_p2p::sync::{NetworkSyncUpdater, SyncState};
 use reth_node_api::{EngineTypes, NodeTypes, PayloadTypes, TreeConfig};
@@ -138,13 +138,14 @@ where
     /// Apply setup using pre-imported chain data from RLP file
     pub async fn apply_with_import<N>(
         &mut self,
-        env: &mut Environment<I>,
+        env: &mut Environment<N>,
         rlp_path: &Path,
     ) -> Result<()>
     where
         N: NodeBuilderHelper,
-        LocalPayloadAttributesBuilder<N::ChainSpec>: PayloadAttributesBuilder<
+        PayloadAttributesBuilder<N::ChainSpec>: reth_node_builder::PayloadAttributesBuilder<
             <<N as NodeTypes>::Payload as PayloadTypes>::PayloadAttributes,
+            Attributes: Clone,
         >,
     {
         // Create nodes with imported chain data
@@ -171,11 +172,12 @@ where
     }
 
     /// Apply the setup to the environment
-    pub async fn apply<N>(&mut self, env: &mut Environment<I>) -> Result<()>
+    pub async fn apply<N>(&mut self, env: &mut Environment<N>) -> Result<()>
     where
         N: NodeBuilderHelper,
-        LocalPayloadAttributesBuilder<N::ChainSpec>: PayloadAttributesBuilder<
+        PayloadAttributesBuilder<N::ChainSpec>: reth_node_builder::PayloadAttributesBuilder<
             <<N as NodeTypes>::Payload as PayloadTypes>::PayloadAttributes,
+            Attributes: Clone,
         >,
     {
         // If import_rlp_path is set, use apply_with_import instead
@@ -248,8 +250,9 @@ where
     ) -> Result<crate::setup_import::ChainImportResult>
     where
         N: NodeBuilderHelper,
-        LocalPayloadAttributesBuilder<N::ChainSpec>: PayloadAttributesBuilder<
+        PayloadAttributesBuilder<N::ChainSpec>: reth_node_builder::PayloadAttributesBuilder<
             <<N as NodeTypes>::Payload as PayloadTypes>::PayloadAttributes,
+            Attributes: Clone,
         >,
     {
         let chain_spec =
@@ -282,10 +285,11 @@ where
         &self,
     ) -> impl Fn(u64) -> <<N as NodeTypes>::Payload as PayloadTypes>::PayloadBuilderAttributes + Copy
     where
-        N: NodeBuilderHelper,
-        LocalPayloadAttributesBuilder<N::ChainSpec>: PayloadAttributesBuilder<
-            <<N as NodeTypes>::Payload as PayloadTypes>::PayloadAttributes,
-        >,
+        N: NodeTypes,
+        PayloadAttributesBuilder<N::ChainSpec>:
+            reth_node_builder::PayloadAttributesBuilder<<N::Payload as PayloadTypes>::PayloadAttributes>,
+        <<N as NodeTypes>::Payload as PayloadTypes>::PayloadBuilderAttributes:
+            From<EthPayloadBuilderAttributes>,
     {
         move |timestamp| {
             let attributes = PayloadAttributes {

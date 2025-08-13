@@ -1,5 +1,5 @@
 [package]
-name = "reth-engine-local"
+name = "reth-engine-miner-baas"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,8 @@ reth-payload-builder.workspace = true
 reth-payload-primitives.workspace = true
 reth-provider.workspace = true
 reth-transaction-pool.workspace = true
+reth-primitives-traits.workspace = true
+reth-metrics.workspace = true
 
 # alloy
 alloy-consensus.workspace = true
@@ -27,8 +29,10 @@ alloy-rpc-types-engine.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 futures-util.workspace = true
+tokio-util.workspace = true
 
 # misc
+
 eyre.workspace = true
 tracing.workspace = true
 

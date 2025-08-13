@@ -494,10 +494,12 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
     }
 
     /// Returns the [`MiningMode`] intended for --dev mode.
-    /// Since `MiningMode::Interval` was removed, we always use `instant` mode.
-    pub fn dev_mining_mode(&self, pool: impl TransactionPool + Clone + Send + 'static) -> MiningMode {
-        let _ = self.dev.block_time; // keep config consumed to avoid unused warning
-        MiningMode::debounced(pool, 100)
+    pub fn dev_mining_mode(&self, pool: impl TransactionPool) -> MiningMode {
+        if let Some(interval) = self.dev.block_time {
+            MiningMode::interval(interval)
+        } else {
+            MiningMode::instant(pool, self.dev.block_max_transactions)
+        }
     }
 }
 

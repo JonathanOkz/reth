@@ -25,6 +25,7 @@ members = [
     "crates/e2e-test-utils/",
     "crates/engine/invalid-block-hooks/",
     "crates/engine/local",
+    "crates/engine/miner-baas",
     "crates/engine/primitives/",
     "crates/engine/service",
     "crates/engine/tree/",
@@ -350,6 +351,7 @@ reth-downloaders = { path = "crates/net/downloaders" }
 reth-e2e-test-utils = { path = "crates/e2e-test-utils" }
 reth-ecies = { path = "crates/net/ecies" }
 reth-engine-local = { path = "crates/engine/local" }
+reth-engine-miner-baas = { path = "crates/engine/miner-baas" }
 reth-engine-primitives = { path = "crates/engine/primitives", default-features = false }
 reth-engine-tree = { path = "crates/engine/tree" }
 reth-engine-service = { path = "crates/engine/service" }

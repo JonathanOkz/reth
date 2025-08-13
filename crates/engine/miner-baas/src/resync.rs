@@ -1,7 +1,7 @@
-//! Resynchronization controller for LocalMiner.
+//! Resynchronization controller for Miner.
 //!
 //! This module encapsulates detection of repeated invalid FCU/newPayload outcomes and exposes
-//! lightweight gating helpers and the top-level resync routine operating on `LocalMiner`.
+//! lightweight gating helpers and the top-level resync routine operating on `Miner`.
 //! The resync execution lives here; `miner.rs` only holds state and minimal utilities.
 
 use std::time::{Duration, Instant};
@@ -11,7 +11,7 @@ use reth_payload_primitives::{PayloadAttributesBuilder, PayloadTypes};
 use reth_provider::BlockReader;
 use reth_transaction_pool::TransactionPool;
 use crate::forkchoice::HeadHistory;
-use crate::miner::LocalMiner;
+use crate::miner::Miner;
 
 /// Configuration for resynchronization behavior.
 #[derive(Clone, Debug)]
@@ -131,10 +131,10 @@ impl ResyncController {
     pub const fn max_replay(&self) -> usize { self.cfg.max_replay }
 }
 
-/// Execute the resync routine using the provided `LocalMiner`.
+/// Execute the resync routine using the provided `Miner`.
 /// This coordinates via the miner's internal `ResyncController` to ensure throttling and
 /// single-flight semantics. Idempotent if called while resync is throttled or in progress.
-pub async fn perform_resync<T, B, P, R>(miner: &mut LocalMiner<T, B, P, R>, reason: &'static str)
+pub async fn perform_resync<T, B, P, R>(miner: &mut Miner<T, B, P, R>, reason: &'static str)
 where
     T: PayloadTypes,
     B: PayloadAttributesBuilder<<T as PayloadTypes>::PayloadAttributes>,

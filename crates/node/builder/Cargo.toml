@@ -24,6 +24,7 @@ reth-db-api.workspace = true
 reth-db-common.workspace = true
 reth-downloaders.workspace = true
 reth-engine-local.workspace = true
+reth-engine-miner-baas.workspace = true
 reth-engine-primitives.workspace = true
 reth-engine-service.workspace = true
 reth-engine-tree.workspace = true
@@ -120,6 +121,7 @@ op = [
     "reth-db?/op",
     "reth-db-api/op",
     "reth-engine-local/op",
+    "reth-engine-miner-baas/op",
     "reth-evm/op",
     "reth-primitives-traits/op",
 ]

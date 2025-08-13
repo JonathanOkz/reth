@@ -1,9 +1,9 @@
-//! Tests for the head history ring buffer used by `LocalMiner`.
+//! Tests for the head history ring buffer used by `Miner`.
 //! Ensures after 100 insertions only 64 elements are kept and that
 //! head/safe/finalized hashes correspond to distances 0, 32, and 64.
 
 use alloy_primitives::B256;
-use reth_engine_local::forkchoice::HeadHistory;
+use reth_engine_miner_baas::forkchoice::HeadHistory;
 
 // Helper to create unique B256 from u64
 fn hash(i: u64) -> B256 {

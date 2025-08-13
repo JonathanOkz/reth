@@ -1,29 +1,32 @@
 //! The implementation of the [`PayloadAttributesBuilder`] for the
-//! [`LocalMiner`](super::LocalMiner).
+//! [`Miner`](super::Miner).
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{address, Address, B256};
+
+/// Hard-coded beneficiary address matching the local miner signer.
+const LOCAL_MINER_BENEFICIARY: Address = address!("7E5F4552091A69125d5DfCb7b8C2659029395Bdf");
 use reth_chainspec::EthereumHardforks;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
-use reth_payload_primitives::PayloadAttributesBuilder;
+use reth_payload_primitives::PayloadAttributesBuilder as PayloadAttributesBuilderTrait;
 use std::sync::Arc;
 
 /// The attributes builder for local Ethereum payload.
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct LocalPayloadAttributesBuilder<ChainSpec> {
+pub struct PayloadAttributesBuilder<ChainSpec> {
     /// The chainspec
     pub chain_spec: Arc<ChainSpec>,
 }
 
-impl<ChainSpec> LocalPayloadAttributesBuilder<ChainSpec> {
+impl<ChainSpec> PayloadAttributesBuilder<ChainSpec> {
     /// Creates a new instance of the builder.
     pub const fn new(chain_spec: Arc<ChainSpec>) -> Self {
         Self { chain_spec }
     }
 }
 
-impl<ChainSpec> PayloadAttributesBuilder<EthPayloadAttributes>
-    for LocalPayloadAttributesBuilder<ChainSpec>
+impl<ChainSpec> PayloadAttributesBuilderTrait<EthPayloadAttributes>
+    for PayloadAttributesBuilder<ChainSpec>
 where
     ChainSpec: Send + Sync + EthereumHardforks + 'static,
 {
@@ -31,7 +34,7 @@ where
         EthPayloadAttributes {
             timestamp,
             prev_randao: B256::random(),
-            suggested_fee_recipient: Address::random(),
+            suggested_fee_recipient: LOCAL_MINER_BENEFICIARY,
             withdrawals: self
                 .chain_spec
                 .is_shanghai_active_at_timestamp(timestamp)
@@ -45,8 +48,8 @@ where
 }
 
 #[cfg(feature = "op")]
-impl<ChainSpec> PayloadAttributesBuilder<op_alloy_rpc_types_engine::OpPayloadAttributes>
-    for LocalPayloadAttributesBuilder<ChainSpec>
+impl<ChainSpec> reth_payload_primitives::PayloadAttributesBuilder<op_alloy_rpc_types_engine::OpPayloadAttributes>
+    for PayloadAttributesBuilder<ChainSpec>
 where
     ChainSpec: Send + Sync + EthereumHardforks + 'static,
 {

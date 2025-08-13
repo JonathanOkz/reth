@@ -7831,6 +7831,7 @@ dependencies = [
  "reth-db",
  "reth-db-common",
  "reth-engine-local",
+ "reth-engine-miner-baas",
  "reth-ethereum-consensus",
  "reth-ethereum-primitives",
  "reth-evm",
@@ -7899,6 +7900,29 @@ dependencies = [
 
 [[package]]
 name = "reth-engine-local"
+version = "1.6.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "eyre",
+ "futures-util",
+ "op-alloy-rpc-types-engine",
+ "reth-chainspec",
+ "reth-engine-primitives",
+ "reth-ethereum-engine-primitives",
+ "reth-optimism-chainspec",
+ "reth-payload-builder",
+ "reth-payload-primitives",
+ "reth-provider",
+ "reth-transaction-pool",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "reth-engine-miner-baas"
 version = "1.6.0"
 dependencies = [
  "alloy-consensus",
@@ -8226,7 +8250,7 @@ dependencies = [
  "reth-consensus",
  "reth-consensus-common",
  "reth-db",
- "reth-engine-local",
+ "reth-engine-miner-baas",
  "reth-eth-wire",
  "reth-ethereum-cli",
  "reth-ethereum-consensus",
@@ -8882,6 +8906,7 @@ dependencies = [
  "reth-db-common",
  "reth-downloaders",
  "reth-engine-local",
+ "reth-engine-miner-baas",
  "reth-engine-primitives",
  "reth-engine-service",
  "reth-engine-tree",
@@ -9122,7 +9147,7 @@ dependencies = [
  "reth-consensus",
  "reth-consensus-common",
  "reth-db",
- "reth-engine-local",
+ "reth-engine-miner-baas",
  "reth-eth-wire",
  "reth-evm",
  "reth-exex",
@@ -9319,7 +9344,7 @@ dependencies = [
  "reth-consensus",
  "reth-db",
  "reth-e2e-test-utils",
- "reth-engine-local",
+ "reth-engine-miner-baas",
  "reth-evm",
  "reth-network",
  "reth-network-api",

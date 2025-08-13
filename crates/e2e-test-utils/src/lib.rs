@@ -3,7 +3,7 @@
 use node::NodeTestContext;
 use reth_chainspec::{ChainSpec, EthChainSpec};
 use reth_db::{test_utils::TempDatabase, DatabaseEnv};
-use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_engine_miner_baas::PayloadAttributesBuilder;
 use reth_network_api::test_utils::PeersHandleProvider;
 use reth_node_builder::{
     components::NodeComponentsBuilder,
@@ -303,7 +303,7 @@ where
             >,
             ChainSpec: From<ChainSpec> + Clone,
         >,
-    LocalPayloadAttributesBuilder<Self::ChainSpec>:
-        PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes>,
+    PayloadAttributesBuilder<Self::ChainSpec>:
+        reth_node_builder::PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes>,
 {
 }

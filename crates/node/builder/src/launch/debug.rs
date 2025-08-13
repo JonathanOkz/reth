@@ -4,8 +4,7 @@ use alloy_provider::network::AnyNetwork;
 use jsonrpsee::core::{DeserializeOwned, Serialize};
 use reth_chainspec::EthChainSpec;
 use reth_consensus_debug_client::{DebugConsensusClient, EtherscanBlockProvider, RpcBlockProvider};
-use reth_engine_local::miner::LocalMiner;
-use reth_engine_local::adaptive_target::{GasAvgConfig, GasLimitConfig, TxBounds};
+use reth_engine_local::LocalMiner;
 use reth_node_api::{BlockTy, FullNodeComponents, PayloadAttributesBuilder, PayloadTypes};
 use std::sync::Arc;
 use tracing::info;
@@ -177,25 +176,17 @@ where
             let blockchain_db = handle.node.provider.clone();
             let chain_spec = config.chain.clone();
             let beacon_engine_handle = handle.node.add_ons_handle.beacon_engine_handle.clone();
-            let miner_pool = handle.node.pool.clone();
+            let pool = handle.node.pool.clone();
             let payload_builder_handle = handle.node.payload_builder_handle.clone();
 
-            let dev_mining_mode = handle.node.config.dev_mining_mode(miner_pool.clone());
+            let dev_mining_mode = handle.node.config.dev_mining_mode(pool);
             handle.node.task_executor.spawn_critical("local engine", async move {
-                // TODO: wire CLI mining args via config if needed
                 LocalMiner::new(
                     blockchain_db,
                     N::Types::local_payload_attributes_builder(&chain_spec),
                     beacon_engine_handle,
                     dev_mining_mode,
                     payload_builder_handle,
-                    miner_pool.clone(),
-                    100,    // burst_threshold default
-                    500,    // burst_interval_ms default
-                    GasAvgConfig { initial_avg_tx_gas: 50_000.0, alpha: 0.2 },
-                    GasLimitConfig { kp: 0.3, kd: 0.1 },
-                    TxBounds { min: 1, max: 30_000 },
-                    50.0,   // target_gas_percent
                 )
                 .run()
                 .await

@@ -10,11 +10,11 @@ use reth_transaction_pool::TransactionPool;
 
 use crate::mode::MiningMode;
 use crate::switch_policy::SwitchDecision;
-use crate::miner::LocalMiner;
+use crate::miner::Miner;
 use reth_payload_primitives::{PayloadAttributesBuilder, PayloadTypes};
 use reth_provider::BlockReader;
 
-impl<T, B, P, R> LocalMiner<T, B, P, R>
+impl<T, B, P, R> Miner<T, B, P, R>
 where
     T: PayloadTypes,
     B: PayloadAttributesBuilder<<T as PayloadTypes>::PayloadAttributes>,
@@ -41,7 +41,7 @@ where
 
         info!(
             target: "engine::local",
-            "LocalMiner started: enter_burst_threshold={}, exit_burst_threshold={}, dwell_ms={}, burst_interval={}ms",
+            "Miner started: enter_burst_threshold={}, exit_burst_threshold={}, dwell_ms={}, burst_interval={}ms",
             self.policy.enter_burst_threshold,
             self.policy.exit_burst_threshold,
             self.policy.min_mode_dwell.as_millis() as u64,
@@ -51,7 +51,7 @@ where
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    info!(target: "engine::local", "Shutdown signal received; stopping LocalMiner loop");
+                    info!(target: "engine::local", "Shutdown signal received; stopping Miner loop");
                     break;
                 }
 
@@ -140,7 +140,7 @@ where
             }
         }
 
-        info!(target: "engine::local", "LocalMiner loop exited");
+        info!(target: "engine::local", "Miner loop exited");
     }
 
     /// Helper that toggles between `Instant` and `Debounced` modes based on pool size.

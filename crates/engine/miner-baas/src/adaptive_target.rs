@@ -1,4 +1,4 @@
-//! Adaptive gas target algorithm used by `LocalMiner`.
+//! Adaptive gas target algorithm used by `Miner`.
 //!
 //! This module exposes [`AdaptiveTarget`], a lightweight controller that
 //! decides **how many transactions** should be packed into the next

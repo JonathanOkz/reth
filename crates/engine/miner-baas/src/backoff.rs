@@ -1,9 +1,9 @@
-//! Error backoff utility for LocalMiner.
+//! Error backoff utility for Miner.
 
 use std::time::Duration;
 use tracing::{error, warn};
 
-use crate::metrics::LocalMinerMetrics;
+use crate::metrics::MinerMetrics;
 
 /// Handle an error with exponential backoff and cooldown.
 ///
@@ -13,7 +13,7 @@ use crate::metrics::LocalMinerMetrics;
 /// - After 10 consecutive errors, sleeps 60s and resets counter
 pub async fn handle_with_backoff(
     consecutive_errors: &mut u8,
-    metrics: &LocalMinerMetrics,
+    metrics: &MinerMetrics,
 ) {
     // Increment error metric and counter
     metrics.miner_errors_total.increment(1);

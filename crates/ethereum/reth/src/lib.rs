@@ -119,7 +119,7 @@ pub mod node {
 #[cfg(feature = "node")]
 pub mod engine {
     #[doc(inline)]
-    pub use reth_engine_local as local;
+    pub use reth_engine_miner_baas as local;
     #[doc(inline)]
     pub use reth_node_ethereum::engine::*;
 }

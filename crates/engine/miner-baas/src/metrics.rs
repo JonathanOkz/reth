@@ -1,13 +1,13 @@
-//! Metrics for `LocalMiner`.
+//! Metrics for `Miner`.
 //!
 //! This module defines all Prometheus metrics used by the local miner implementation.
 
 use reth_metrics::{metrics::{Counter, Gauge, Histogram}, metrics, Metrics};
 
-/// Metrics for `LocalMiner`.
+/// Metrics for `Miner`.
 #[derive(Metrics, Clone)]
 #[metrics(scope = "local_miner")]
-pub struct LocalMinerMetrics {
+pub struct MinerMetrics {
     /// Counter for errors encountered while mining.
     pub miner_errors_total: Counter,
     /// Counter for payload build timeouts (non-fatal).

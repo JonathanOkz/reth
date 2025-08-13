@@ -9,7 +9,7 @@ use crate::{
 use op_alloy_consensus::{interop::SafetyLevel, OpPooledTransaction};
 use op_alloy_rpc_types_engine::OpExecutionData;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, Hardforks};
-use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_engine_miner_baas::LocalPayloadAttributesBuilder;
 use reth_evm::ConfigureEvm;
 use reth_network::{
     types::BasicNetworkPrimitives, NetworkConfig, NetworkHandle, NetworkManager, NetworkPrimitives,

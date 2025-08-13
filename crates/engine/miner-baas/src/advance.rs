@@ -1,4 +1,4 @@
-//! Advance helper: build and submit a block for LocalMiner.
+//! Advance helper: build and submit a block for Miner.
 
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -16,13 +16,13 @@ use reth_transaction_pool::TransactionPool;
 
 use crate::adaptive_target::AdaptiveTarget;
 use crate::forkchoice::HeadHistory;
-use crate::metrics::LocalMinerMetrics;
+use crate::metrics::MinerMetrics;
 
 use alloy_consensus::{
     constants::MAXIMUM_EXTRA_DATA_SIZE
 };
 
-/// Full block build-and-submit path previously implemented inside `LocalMiner::advance`.
+/// Full block build-and-submit path previously implemented inside `Miner::advance`.
 ///
 /// Returns Ok(()) on success, otherwise an error that callers may handle with backoff.
 #[allow(clippy::too_many_arguments)]
@@ -31,7 +31,7 @@ pub async fn build_and_submit_block<T, B, P, R>(
     payload_attributes_builder: &B,
     payload_builder: &PayloadBuilderHandle<T>,
     pool: &P,
-    metrics: &LocalMinerMetrics,
+    metrics: &MinerMetrics,
     head_history: &mut HeadHistory,
     provider: &R,
     last_timestamp: &mut u64,

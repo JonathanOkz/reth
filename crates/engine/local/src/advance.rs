@@ -2,6 +2,9 @@
 
 use std::time::{Duration, UNIX_EPOCH};
 
+/// Maximum allowed clock skew between the local wall clock and any timestamp we
+const MAX_CLOCK_SKEW_MS: u64 = 60_000;
+
 use eyre::OptionExt;
 use tracing::{debug, error, info, warn};
 
@@ -18,17 +21,30 @@ use crate::adaptive_target::AdaptiveTarget;
 use crate::forkchoice::HeadHistory;
 use crate::metrics::LocalMinerMetrics;
 
+// ---------------------------------------------------------------------
+// Helper utilities
+// ---------------------------------------------------------------------
+
+/// Returns `true` if the absolute difference between the two millisecond timestamps
+/// exceeds [`MAX_CLOCK_SKEW_MS`]. Extracted so we can unit-test the policy in
+/// isolation.
+#[inline]
+fn exceeds_clock_skew(a_ms: u64, b_ms: u64) -> bool {
+    a_ms.abs_diff(b_ms) > MAX_CLOCK_SKEW_MS
+}
+
 /// Full block build-and-submit path previously implemented inside `LocalMiner::advance`.
 ///
 /// Returns Ok(()) on success, otherwise an error that callers may handle with backoff.
 #[allow(clippy::too_many_arguments)]
-pub async fn build_and_submit_block<T, B, P>(
+pub async fn build_and_submit_block<T, B, P, R>(
     to_engine: &BeaconConsensusEngineHandle<T>,
     payload_attributes_builder: &B,
     payload_builder: &PayloadBuilderHandle<T>,
     pool: &P,
     metrics: &LocalMinerMetrics,
     head_history: &mut HeadHistory,
+    provider: &R,
     last_timestamp: &mut u64,
     adaptive: &mut AdaptiveTarget,
     burst_interval_ms: u64,
@@ -37,36 +53,54 @@ where
     T: PayloadTypes,
     B: PayloadAttributesBuilder<<T as PayloadTypes>::PayloadAttributes>,
     P: TransactionPool,
+    R: reth_provider::HeaderProvider,
 {
     // Get current system time with proper error handling
-    let current_time = std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_else(|e| {
-            error!(target: "engine::local", "System time error: {:?}, using last_timestamp + 1", e);
-            *last_timestamp + 1
-        });
+    let current_time = match std::time::SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(e) => {
+            error!(target: "engine::local", "System time error: {:?}, retrying later", e);
+            return Ok(()); // block and retry later
+        }
+    };
 
-    // Ensure timestamp always moves forward
-    let mut timestamp = std::cmp::max(*last_timestamp + 1, current_time);
-    const MAX_SKEW_SECS: u64 = 3600; // allow up to 1 hour into the future
-    if timestamp > current_time + MAX_SKEW_SECS {
+    // Ensure timestamp is non-decreasing (allow equality with parent)
+    let timestamp = std::cmp::max(*last_timestamp, current_time);
+    
+
+    // ---------------------------------------------------------------------
+    // Sanity-check local clock against timestamp in extra_data of parent block
+    // ---------------------------------------------------------------------
+    if let Some(parent_extra_ts_ms) = head_history.parent_extra_timestamp_ms(provider) {
+        let now_ms = current_time.saturating_mul(1000);
+        if exceeds_clock_skew(now_ms, parent_extra_ts_ms) {
+            let delta = now_ms.abs_diff(parent_extra_ts_ms);
+            warn!(target: "engine::local", delta_ms = delta, "Local clock differs from parent extra_data timestamp by > {} ms, skipping mining", MAX_CLOCK_SKEW_MS);
+            return Ok(());
+        }
+    }
+    // Reject if chosen timestamp drifts too far *into the future* relative to
+    // the local wall-clock.
+    let now_ms = current_time.saturating_mul(1000);
+    let ts_ms = timestamp.saturating_mul(1000);
+    if exceeds_clock_skew(ts_ms, now_ms) {
         warn!(
             target: "engine::local",
-            "Clock ahead by > {} s (ts={}, now={}). Skipping mining until wall-clock catches up",
-            MAX_SKEW_SECS,
-            timestamp,
-            current_time
+            "Clock ahead by > {} ms (ts_ms={}, now_ms={}). Skipping mining until wall-clock catches up",
+            MAX_CLOCK_SKEW_MS,
+            ts_ms,
+            now_ms
         );
         return Ok(());
     }
 
     warn!(
         target: "engine::local",
-        "timestamp ::::::::: {} -> {} -> {} -> block time: {}s",
+        "timestamp ::::::::: current_time:{} -> last_timestamp:{} -> timestamp:{} -> parent_extra_ts_ms:{} -> block time:{}s",
         current_time,
         *last_timestamp,
         timestamp,
+        parent_extra_ts_ms,
         timestamp - *last_timestamp
     );
 
@@ -193,3 +227,29 @@ where
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_skew_within_bounds() {
+        // delta 30 secondes < MAX_CLOCK_SKEW_MS (1 min)
+        let now = 1_000_000u64;
+        let prev = now + 30 * 1000;
+        assert!(!exceeds_clock_skew(now, prev));
+    }
+
+    #[test]
+    fn clock_skew_exceeds_bounds() {
+        // delta 70 secondes > MAX_CLOCK_SKEW_MS
+        let now = 1_000_000u64;
+        let prev = now + 70 * 1000;
+        assert!(exceeds_clock_skew(now, prev));
+    }
+}
+

@@ -221,6 +221,7 @@ where
             &self.pool,
             &self.metrics,
             &mut self.head_history,
+            &self._provider,
             &mut self.last_timestamp,
             &mut self.adaptive,
             self.burst_interval_ms,

@@ -3,6 +3,7 @@ use alloy_consensus::{
     proofs, Block, BlockBody, BlockHeader, Header, Transaction, TxReceipt, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::merge::BEACON_NONCE;
+#[cfg(feature = "std")] use std::time::{SystemTime, UNIX_EPOCH};
 use alloy_evm::{block::BlockExecutorFactory, eth::EthBlockExecutionCtx};
 use alloy_primitives::Bytes;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
@@ -12,18 +13,34 @@ use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::logs_bloom;
 
 /// Block builder for Ethereum.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EthBlockAssembler<ChainSpec = reth_chainspec::ChainSpec> {
     /// The chainspec.
     pub chain_spec: Arc<ChainSpec>,
     /// Extra data to use for the blocks.
     pub extra_data: Bytes,
+    /// Optional header signer (Clique-like).
+    pub signer: Option<alloc::sync::Arc<dyn crate::header_signer::HeaderSigner>>,
 }
 
 impl<ChainSpec> EthBlockAssembler<ChainSpec> {
     /// Creates a new [`EthBlockAssembler`].
     pub fn new(chain_spec: Arc<ChainSpec>) -> Self {
-        Self { chain_spec, extra_data: Default::default() }
+        Self { chain_spec, extra_data: Default::default(), signer: None }
+    }
+    /// Inject a [`HeaderSigner`].
+    pub fn with_signer(mut self, signer: alloc::sync::Arc<dyn crate::header_signer::HeaderSigner>) -> Self {
+        self.signer = Some(signer);
+        self
+    }
+}
+
+impl<CS: core::fmt::Debug> core::fmt::Debug for EthBlockAssembler<CS> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EthBlockAssembler")
+            .field("chain_spec", &self.chain_spec)
+            .field("extra_data", &self.extra_data)
+            .finish_non_exhaustive()
     }
 }
 
@@ -88,7 +105,7 @@ where
             };
         }
 
-        let header = Header {
+        let mut header = Header {
             parent_hash: ctx.parent_hash,
             ommers_hash: EMPTY_OMMER_ROOT_HASH,
             beneficiary: evm_env.block_env.beneficiary,
@@ -105,12 +122,15 @@ where
             gas_limit: evm_env.block_env.gas_limit,
             difficulty: evm_env.block_env.difficulty,
             gas_used: *gas_used,
-            extra_data: self.extra_data.clone(),
+            extra_data: Bytes::default(),
             parent_beacon_block_root: ctx.parent_beacon_block_root,
             blob_gas_used,
             excess_blob_gas,
             requests_hash,
         };
+
+        // Build `extra_data` (timestamp ms + optional signature) via helper
+        header.extra_data = crate::extra_data::build_extra_data(timestamp, self.signer.as_ref(), &header);
 
         Ok(Block {
             header,

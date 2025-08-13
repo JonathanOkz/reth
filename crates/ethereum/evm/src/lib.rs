@@ -11,13 +11,21 @@
     html_favicon_url = "https://avatars0.githubusercontent.com/u/97369466?s=256",
     issue_tracker_base_url = "https://github.com/paradigmxyz/reth/issues/"
 )]
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
+use tracing as _;
+
 use alloc::{borrow::Cow, sync::Arc};
+
+mod miner_signer;
+mod extra_data;
+mod header_signer;
+
+pub use header_signer::HeaderSigner;
 use alloy_consensus::{BlockHeader, Header};
 use alloy_eips::Decodable2718;
 pub use alloy_evm::EthEvm;
@@ -101,7 +109,8 @@ impl<ChainSpec, EvmFactory> EthEvmConfig<ChainSpec, EvmFactory> {
     /// Creates a new Ethereum EVM configuration with the given chain spec and EVM factory.
     pub fn new_with_evm_factory(chain_spec: Arc<ChainSpec>, evm_factory: EvmFactory) -> Self {
         Self {
-            block_assembler: EthBlockAssembler::new(chain_spec.clone()),
+            block_assembler: EthBlockAssembler::new(chain_spec.clone())
+                .with_signer(miner_signer::default_header_signer()),
             executor_factory: EthBlockExecutorFactory::new(
                 RethReceiptBuilder::default(),
                 chain_spec,

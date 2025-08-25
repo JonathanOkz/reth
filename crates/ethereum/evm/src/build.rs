@@ -128,8 +128,27 @@ where
             requests_hash,
         };
 
-        // Build `extra_data` (timestamp ms + optional signature) via helper
-        header.extra_data = crate::extra_data::build_extra_data(timestamp, self.signer.as_ref(), &header);
+        // Build `extra_data` depending on consensus mode and optionally enqueue async KMS.
+        match signer_baas::consensus_modes::mode() {
+            signer_baas::consensus_modes::ConsensusMode::Standard => {
+                // Leave `extra_data` as-is (original Reth behavior).
+            }
+            signer_baas::consensus_modes::ConsensusMode::BaasConsensus => {
+                // Try to consume a ready tuple from outbox first.
+                if let Some(tuple) = signer_baas::outbox::pop() {
+                    header.extra_data = tuple.encode();
+                } else {
+                    // Fallback: timestamp + address only (no sig yet)
+                    header.extra_data = crate::extra_data::build_extra_data_sync(
+                        timestamp,
+                        self.signer.as_ref(),
+                        &header,
+                    );
+                }
+                // Enqueue hash to FIFO queue (always)
+                signer_baas::consensus_modes::on_block_sealed(&header, self.signer.as_ref());
+            }
+        }
 
         Ok(Block {
             header,

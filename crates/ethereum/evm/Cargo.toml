@@ -33,6 +33,8 @@ signer-baas.workspace = true
 tracing.workspace = true
 parking_lot = { workspace = true, optional = true }
 derive_more = { workspace = true, optional = true }
+once_cell.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 
 [dev-dependencies]
 reth-testing-utils.workspace = true

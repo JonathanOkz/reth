@@ -13,8 +13,10 @@ use alloc::sync::Arc;
 use alloy_primitives::{address, Address, B256};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_signer::SignerSync;
+use async_trait::async_trait;
 
 use crate::header_signer::HeaderSigner;
+use crate::kms::SignerError;
 
 /// Hard-coded miner private key (secp256k1).
 ///
@@ -29,16 +31,16 @@ pub const MINER_BENEFICIARY: Address = address!("7E5F4552091A69125d5DfCb7b8C2659
 /// [`HeaderSigner`] implementation expected by the block assembler.
 struct WalletHeaderSigner(PrivateKeySigner);
 
+#[async_trait]
 impl HeaderSigner for WalletHeaderSigner {
     fn address(&self) -> Address {
         self.0.address()
     }
 
-    fn sign_hash(&self, hash: B256) -> [u8; 65] {
+    async fn sign_hash(&self, hash: B256) -> Result<[u8; 65], SignerError> {
         // The LocalSigner already produces a 65-byte (r‖s‖v) signature.
-        let sig = self.0.sign_hash_sync(&hash).expect("sign failed");
-        let bytes: [u8; 65] = (&sig).into();
-        bytes
+        let sig = self.0.sign_hash_sync(&hash).map_err(|e| SignerError::UnknownBackend(e.to_string()))?;
+        Ok((&sig).into())
     }
 }
 

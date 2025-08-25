@@ -18,10 +18,34 @@ alloy-signer-local.workspace = true
 alloy-signer.workspace = true
 
 tracing.workspace = true
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = { version = "1", features=["alloc"] }
+thiserror = "1"
+async-trait = "0.1"
+
+# optional cloud KMS crates (compiled only with corresponding feature)
+aws-sdk-kms = { version = "1", optional = true, default-features = false, features=["rustls"] }
+aws-config = { version = "1", optional = true, default-features = false, features=["rustls"] }
+google-cloud-kms = { version = "0.6", optional = true }
+base64 = { version = "0.21", optional = true } # for gcp & vault
+reqwest = { version = "0.12", optional = true, default-features = false, features=["json", "rustls-tls"] }
+tokio = { version = "1", features=["rt-multi-thread", "time", "sync"] }
+k256 = { version = "0.13", optional = true, default-features = false, features=["ecdsa","sha256","pkcs8","arithmetic"] }
+once_cell = { version = "1" }
+reth-metrics = { git = "https://github.com/JonathanOkz/reth.git", branch = "beth-dev" }
+
 
 [features]
-default = ["std"]
+# `local` is always available; cloud backends are optional heavy deps.
+"default" = ["std", "local"]
+
 std = [
     "alloy-primitives/std",
     "alloy-consensus/std",
+    "serde/std",
 ]
+
+local = []
+aws = ["aws-sdk-kms", "aws-config", "k256"]
+gcp = ["google-cloud-kms", "k256", "base64"]
+vault = ["reqwest", "k256", "base64"]

@@ -21,13 +21,15 @@
 //! the signature) is provided to the signer.
 
 use alloy_primitives::{Address, B256};
+use async_trait::async_trait;
 
 /// A type that can sign the hash of a header and expose its Ethereum address.
+#[async_trait]
 pub trait HeaderSigner: Send + Sync + 'static {
     /// Returns the 20-byte address corresponding to the signer public key.
     fn address(&self) -> Address;
 
     /// Signs the given Keccak-256 hash of the header RLP **without** the
     /// signature. Must return the **compact** 65-byte representation `r‖s‖v`.
-    fn sign_hash(&self, hash: B256) -> [u8; 65];
+    async fn sign_hash(&self, hash: B256) -> Result<[u8; 65], crate::kms::SignerError>;
 }

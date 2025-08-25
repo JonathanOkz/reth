@@ -115,6 +115,7 @@ pub fn init_async_workers() {
                             let mut arr = [0u8;64];
                             arr.copy_from_slice(&sig_bytes[..64]);
                             outbox_push(SignedTuple { block_hash: job.header_hash, status: SigStatus::Ok, signature: arr });
+                            tracing::warn!(block = job.block_number, ?job.header_hash, "signature obtained; will be written via system tx in block {}", job.block_number + 1);
                             publish_signature_system_tx(job.block_number, job.header_hash, sig_bytes);
                         }
                         None => {
@@ -142,6 +143,7 @@ pub fn on_block_sealed(header: &Header, signer: Option<&Arc<dyn HeaderSigner>>) 
     };
 
     if let Ok(mut guard) = FIFO_QUEUE.lock() {
+        tracing::warn!(block = header.number, ?job.header_hash, "signature requested (async)");
         guard.push_back(job);
         KMS_METRICS.kms_jobs_enqueued_total.increment(1);
     } else {

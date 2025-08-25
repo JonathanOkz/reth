@@ -82,17 +82,17 @@ where
     // ---------------------------------------------------------------------
     let parent_ts_ms = head_history.parent_extra_timestamp_ms(provider);
     let delta_ms = current_time.as_millis().saturating_sub(parent_ts_ms as u128);
-    warn!(
-        target: "engine::miner-baas",
-        "timestamp ::::::::: MAXIMUM_EXTRA_DATA_SIZE:{} | current_time:{} s -> last_timestamp:{} s -> current_time:{} ms -> last_timestamp:{:?} ms -> delta_ms:{:?} -> miner:{:?}",
-        MAXIMUM_EXTRA_DATA_SIZE,
-        current_time.as_secs(),
-        *last_timestamp,
-        current_time.as_millis(),
-        parent_ts_ms,
-        delta_ms,
-        head_history.parent_extra_miner_address(provider)
-    );
+    // warn!(
+    //     target: "engine::miner-baas",
+    //     "timestamp ::::::::: MAXIMUM_EXTRA_DATA_SIZE:{} | current_time:{} s -> last_timestamp:{} s -> current_time:{} ms -> last_timestamp:{:?} ms -> delta_ms:{:?} -> miner:{:?}",
+    //     MAXIMUM_EXTRA_DATA_SIZE,
+    //     current_time.as_secs(),
+    //     *last_timestamp,
+    //     current_time.as_millis(),
+    //     parent_ts_ms,
+    //     delta_ms,
+    //     head_history.parent_extra_miner_address(provider)
+    // );
     // ----- Diagnostic log (END) -----
 
     // FCU with attributes to kick off payload build

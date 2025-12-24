@@ -66,7 +66,10 @@ alloy-chains.workspace = true
 
 itertools.workspace = true
 futures.workspace = true
-tokio.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "time"] }
+tokio-util = { workspace = true, features = ["io"] }
 
 # misc
 humantime.workspace = true
@@ -82,7 +85,7 @@ tracing.workspace = true
 backon.workspace = true
 secp256k1 = { workspace = true, features = ["global-context", "std", "recovery"] }
 tokio-stream.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls", "json", "stream"] }
 metrics.workspace = true
 
 # io

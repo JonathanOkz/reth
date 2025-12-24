@@ -1,7 +1,7 @@
 use crate::{
     database::Database,
     error::{mdbx_result, Error, Result},
-    flags::EnvironmentFlags,
+    flags::{CopyFlags, EnvironmentFlags},
     transaction::{RO, RW},
     txn_manager::{TxnManager, TxnManagerMessage, TxnPtr},
     Mode, SyncMode, Transaction, TransactionKind,
@@ -147,6 +147,27 @@ impl Environment {
         F: FnOnce(*mut ffi::MDBX_env) -> T,
     {
         f(self.env_ptr())
+    }
+
+    pub fn copy_to_path<P: AsRef<Path>>(&self, dest: P, flags: CopyFlags) -> Result<()> {
+        #[cfg(unix)]
+        fn path_to_bytes<P: AsRef<Path>>(path: P) -> Vec<u8> {
+            use std::os::unix::ffi::OsStrExt;
+            path.as_ref().as_os_str().as_bytes().to_vec()
+        }
+
+        #[cfg(windows)]
+        fn path_to_bytes<P: AsRef<Path>>(path: P) -> Vec<u8> {
+            path.as_ref().to_string_lossy().to_string().into_bytes()
+        }
+
+        let dest = match CString::new(path_to_bytes(dest)) {
+            Ok(dest) => dest,
+            Err(_) => return Err(Error::Invalid),
+        };
+
+        mdbx_result(unsafe { ffi::mdbx_env_copy(self.env_ptr(), dest.as_ptr(), flags.bits()) })?;
+        Ok(())
     }
 
     /// Flush the environment data buffers to disk.

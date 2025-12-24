@@ -206,6 +206,16 @@ impl EnvironmentFlags {
 }
 
 bitflags! {
+     #[derive(Default)]
+     pub struct CopyFlags: MDBX_copy_flags_t {
+         const COMPACT = MDBX_CP_COMPACT;
+         const FORCE_DYNAMIC_SIZE = MDBX_CP_FORCE_DYNAMIC_SIZE;
+         const DONT_FLUSH = MDBX_CP_DONT_FLUSH;
+         const THROTTLE_MVCC = MDBX_CP_THROTTLE_MVCC;
+     }
+ }
+
+ bitflags! {
     #[doc="Database options."]
     #[derive(Default)]
     pub struct DatabaseFlags: MDBX_env_flags_t {

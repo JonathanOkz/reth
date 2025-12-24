@@ -142,6 +142,11 @@ where
                                 "Invalid params for newPendingTransactions",
                             ))
                         }
+                        Params::TransactionReceipts(_) => {
+                            return Err(invalid_params_rpc_err(
+                                "Invalid params for newPendingTransactions",
+                            ))
+                        }
                     }
                 }
 

@@ -14,6 +14,10 @@ use reth_tasks::{TaskExecutor, TaskManager};
 use std::{future::Future, pin::pin, sync::mpsc, time::Duration};
 use tracing::{debug, error, trace};
 
+fn env_u64(key: &str) -> Option<u64> {
+    std::env::var(key).ok().and_then(|v| v.parse::<u64>().ok())
+}
+
 /// Executes CLI commands.
 ///
 /// Provides utilities for running a cli command to completion.
@@ -74,7 +78,8 @@ impl CliRunner {
             // after the command has finished or exit signal was received we shutdown the task
             // manager which fires the shutdown signal to all tasks spawned via the task
             // executor and awaiting on tasks spawned with graceful shutdown
-            task_manager.graceful_shutdown_with_timeout(Duration::from_secs(5));
+            let timeout = env_u64("RETH_GRACEFUL_SHUTDOWN_TIMEOUT_SECS").unwrap_or(5);
+            task_manager.graceful_shutdown_with_timeout(Duration::from_secs(timeout));
         }
 
         // `drop(tokio_runtime)` would block the current thread until its pools
@@ -90,7 +95,8 @@ impl CliRunner {
             })
             .unwrap();
 
-        let _ = rx.recv_timeout(Duration::from_secs(5)).inspect_err(|err| {
+        let drop_timeout = env_u64("RETH_TOKIO_RUNTIME_DROP_TIMEOUT_SECS").unwrap_or(5);
+        let _ = rx.recv_timeout(Duration::from_secs(drop_timeout)).inspect_err(|err| {
             debug!(target: "reth::cli", %err, "tokio runtime shutdown timed out");
         });
 

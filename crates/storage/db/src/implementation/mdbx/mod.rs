@@ -17,7 +17,7 @@ use reth_db_api::{
     transaction::{DbTx, DbTxMut},
 };
 use reth_libmdbx::{
-    ffi, DatabaseFlags, Environment, EnvironmentFlags, Geometry, HandleSlowReadersReturnCode,
+    CopyFlags, ffi, DatabaseFlags, Environment, EnvironmentFlags, Geometry, HandleSlowReadersReturnCode,
     MaxReadTransactionDuration, Mode, PageSize, SyncMode, RO, RW,
 };
 use reth_storage_errors::db::LogLevel;
@@ -501,6 +501,14 @@ impl DatabaseEnv {
     pub fn with_metrics(mut self) -> Self {
         self.metrics = Some(DatabaseEnvMetrics::new().into());
         self
+    }
+
+    #[allow(missing_docs)]
+    pub fn snapshot_to_path(&self, dest: &Path, flags: CopyFlags) -> Result<(), DatabaseError> {
+        self.inner
+            .copy_to_path(dest, flags)
+            .map_err(|err| DatabaseError::Other(err.to_string()))?;
+        Ok(())
     }
 
     /// Creates all the tables defined in [`Tables`], if necessary.

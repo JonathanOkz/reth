@@ -66,10 +66,7 @@ alloy-chains.workspace = true
 
 itertools.workspace = true
 futures.workspace = true
-futures-util.workspace = true
-bytes.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "time"] }
-tokio-util = { workspace = true, features = ["io"] }
 
 # misc
 humantime.workspace = true

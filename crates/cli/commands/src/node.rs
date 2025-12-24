@@ -16,10 +16,8 @@ use reth_node_core::{
     node_config::NodeConfig,
     version,
 };
-use std::{ffi::OsString, fmt, path::PathBuf, sync::Arc};
+use std::{ffi::OsString, fmt, io, path::PathBuf, sync::Arc, time::Instant};
 use tracing::warn;
-
-use crate::gcs_snapshot;
 
 /// Start the node
 #[derive(Debug, Parser)]
@@ -131,11 +129,8 @@ pub struct SnapshotArgs {
     #[arg(long = "snapshot.enabled", env = "RETH_SNAPSHOT_ENABLED", default_value_t = false)]
     pub snapshot_enabled: bool,
 
-    #[arg(long = "snapshot.gcs-bucket", env = "RETH_SNAPSHOT_GCS_BUCKET")]
-    pub gcs_bucket: Option<String>,
-
-    #[arg(long = "snapshot.gcs-object", env = "RETH_SNAPSHOT_GCS_OBJECT")]
-    pub gcs_object: Option<String>,
+    #[arg(long = "snapshot.snapshots-dir", env = "RETH_SNAPSHOT_SNAPSHOTS_DIR")]
+    pub snapshots_dir: Option<PathBuf>,
 }
 
 impl<C: ChainSpecParser> NodeCommand<C> {
@@ -215,41 +210,72 @@ where
         let data_dir = node_config.datadir();
         let db_path = data_dir.db();
 
-        let snapshot_http_client = if snapshot.snapshot_enabled && snapshot.gcs_bucket.is_some() {
-            match gcs_snapshot::default_client() {
-                Ok(client) => Some(client),
-                Err(err) => {
-                    warn!(target: "reth::cli", ?err, "failed to create http client for snapshots");
-                    None
-                }
-            }
+        let snapshot_path = if snapshot.snapshot_enabled {
+            snapshot.snapshots_dir.as_ref().map(|dir| {
+                let mut path = dir.clone();
+                path.push(node_config.chain.chain_id().to_string());
+                path.push("mdbx.dat");
+                path
+            })
         } else {
             None
         };
 
         if snapshot.snapshot_enabled {
-            if let (Some(bucket), Some(client)) =
-                (snapshot.gcs_bucket.as_deref(), snapshot_http_client.as_ref())
-            {
-                let object = snapshot
-                    .gcs_object
-                    .clone()
-                    .unwrap_or_else(|| format!("{}/mdbx.dat", node_config.chain.chain_id()));
+            if let Some(snapshot_path) = snapshot_path.as_ref() {
                 let db_file = db_path.join("mdbx.dat");
-                match gcs_snapshot::download_to_path(client, bucket, &object, &db_file).await {
-                    Ok(true) => {
-                        tracing::info!(target: "reth::cli", bucket = %bucket, object = %object, "snapshot restored");
+                if let Some(parent) = db_file.parent() {
+                    if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                        warn!(target: "reth::cli", ?err, path = ?parent, "failed to create db dir");
+                    }
+                }
+
+                let tmp_path = db_file.with_extension(format!("tmp-{}", std::process::id()));
+
+                let restore_started = Instant::now();
+                let snapshot_src = snapshot_path.clone();
+                let tmp_path_for_restore = tmp_path.clone();
+                let db_file_for_restore = db_file.clone();
+                let restore_res = tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::remove_file(&tmp_path_for_restore);
+                    std::fs::copy(&snapshot_src, &tmp_path_for_restore)?;
+                    std::fs::rename(&tmp_path_for_restore, &db_file_for_restore)?;
+                    Ok::<_, io::Error>(())
+                })
+                .await;
+
+                match restore_res {
+                    Ok(Ok(())) => {
+                        tracing::info!(
+                            target: "reth::cli",
+                            path = ?snapshot_path,
+                            elapsed_ms = restore_started.elapsed().as_millis(),
+                            "snapshot restored"
+                        );
                         let _ = tokio::fs::remove_file(db_path.join("mdbx.lck")).await;
                     }
-                    Ok(false) => {
-                        tracing::info!(target: "reth::cli", bucket = %bucket, object = %object, "no snapshot found, skipping restore");
+                    Ok(Err(err)) if err.kind() == io::ErrorKind::NotFound => {
+                        tracing::info!(target: "reth::cli", path = ?snapshot_path, "no snapshot found, skipping restore");
+                    }
+                    Ok(Err(err)) => {
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        warn!(
+                            target: "reth::cli",
+                            err = %err,
+                            "snapshot restore failed, continuing without restore"
+                        );
                     }
                     Err(err) => {
-                        warn!(target: "reth::cli", ?err, "snapshot restore failed, continuing without restore");
+                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        warn!(
+                            target: "reth::cli",
+                            err = %err,
+                            "snapshot restore task join error, continuing without restore"
+                        );
                     }
                 }
             } else {
-                warn!(target: "reth::cli", "snapshot enabled but no GCS bucket configured; skipping snapshot restore");
+                warn!(target: "reth::cli", "snapshot enabled but no snapshots dir configured; skipping snapshot restore");
             }
         }
 
@@ -257,67 +283,90 @@ where
         let database = Arc::new(init_db(db_path.clone(), db.database_args())?.with_metrics());
 
         if snapshot.snapshot_enabled {
-            if let (Some(bucket), Some(client)) = (snapshot.gcs_bucket.clone(), snapshot_http_client)
-            {
-                let object = snapshot
-                    .gcs_object
-                    .clone()
-                    .unwrap_or_else(|| format!("{}/mdbx.dat", node_config.chain.chain_id()));
+            if let Some(snapshot_path) = snapshot_path {
                 let database = database.clone();
                 ctx.task_executor.spawn_critical_with_graceful_shutdown_signal(
-                    "mdbx-snapshot-gcs",
+                    "mdbx-snapshot-file",
                     move |shutdown| async move {
                         let guard = shutdown.await;
 
-                    let tmp_path = std::env::temp_dir().join(format!(
-                        "reth-mdbx-snapshot-{}.dat",
-                        std::process::id()
-                    ));
-                    let _ = tokio::fs::remove_file(&tmp_path).await;
-
-                    let mut flags = CopyFlags::DONT_FLUSH;
-                    if std::env::var("RETH_SNAPSHOT_MDBX_THROTTLE_MVCC").ok().as_deref() == Some("1") {
-                        flags |= CopyFlags::THROTTLE_MVCC;
-                    }
-
-                    let tmp_path_for_snapshot = tmp_path.clone();
-                    let db_for_snapshot = database.clone();
-                    let flags_for_snapshot = flags;
-                    let snapshot_res = tokio::task::spawn_blocking(move || {
-                        db_for_snapshot
-                            .snapshot_to_path(&tmp_path_for_snapshot, flags_for_snapshot)
-                            .map_err(|e| e.to_string())
-                    })
-                    .await;
-
-                    match snapshot_res {
-                        Ok(Ok(())) => {}
-                        Ok(Err(err)) => {
-                            warn!(target: "reth::cli", %err, "failed to snapshot mdbx");
-                            let _ = tokio::fs::remove_file(&tmp_path).await;
-                            drop(guard);
-                            return
+                        if let Some(parent) = snapshot_path.parent() {
+                            if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                                warn!(target: "reth::cli", ?err, path = ?parent, "failed to create snapshots dir");
+                            }
                         }
-                        Err(err) => {
-                            warn!(target: "reth::cli", %err, "snapshot task join error");
-                            let _ = tokio::fs::remove_file(&tmp_path).await;
-                            drop(guard);
-                            return
+
+                        let mut flags = CopyFlags::DONT_FLUSH;
+                        if std::env::var("RETH_SNAPSHOT_MDBX_THROTTLE_MVCC").ok().as_deref() == Some("1") {
+                            flags |= CopyFlags::THROTTLE_MVCC;
                         }
-                    }
 
-                    if let Err(err) = gcs_snapshot::upload_from_path(&client, &bucket, &object, &tmp_path).await {
-                        warn!(target: "reth::cli", ?err, "failed to upload snapshot to gcs");
-                    } else {
-                        tracing::info!(target: "reth::cli", bucket = %bucket, object = %object, "snapshot uploaded");
-                    }
+                        let dest_tmp = snapshot_path.with_extension(format!("tmp-{}", std::process::id()));
 
-                        let _ = tokio::fs::remove_file(&tmp_path).await;
+                        let snapshot_started = Instant::now();
+                        let db_for_snapshot = database.clone();
+                        let flags_for_snapshot = flags;
+                        let dest_tmp_for_snapshot = dest_tmp.clone();
+                        let snapshot_res = tokio::task::spawn_blocking(move || {
+                            let _ = std::fs::remove_file(&dest_tmp_for_snapshot);
+                            db_for_snapshot
+                                .snapshot_to_path(&dest_tmp_for_snapshot, flags_for_snapshot)
+                                .map_err(|e| e.to_string())
+                        })
+                        .await;
+
+                        match snapshot_res {
+                            Ok(Ok(())) => {
+                                tracing::info!(
+                                    target: "reth::cli",
+                                    path = ?dest_tmp,
+                                    elapsed_ms = snapshot_started.elapsed().as_millis(),
+                                    "mdbx snapshot created"
+                                );
+                            }
+                            Ok(Err(err)) => {
+                                warn!(target: "reth::cli", err = %err, "failed to snapshot mdbx");
+                                let _ = tokio::fs::remove_file(&dest_tmp).await;
+                                drop(guard);
+                                return
+                            }
+                            Err(err) => {
+                                warn!(target: "reth::cli", err = %err, "snapshot task join error");
+                                let _ = tokio::fs::remove_file(&dest_tmp).await;
+                                drop(guard);
+                                return
+                            }
+                        }
+
+                        let finalize_started = Instant::now();
+                        match tokio::fs::rename(&dest_tmp, &snapshot_path).await {
+                            Ok(()) => {
+                                tracing::info!(
+                                    target: "reth::cli",
+                                    path = ?snapshot_path,
+                                    elapsed_ms = finalize_started.elapsed().as_millis(),
+                                    "snapshot written"
+                                );
+                            }
+                            Err(err) => {
+                                warn!(target: "reth::cli", ?err, dest = ?snapshot_path, "failed to finalize snapshot write, trying copy fallback");
+                                match tokio::fs::copy(&dest_tmp, &snapshot_path).await {
+                                    Ok(_) => {
+                                        let _ = tokio::fs::remove_file(&dest_tmp).await;
+                                        tracing::info!(target: "reth::cli", path = ?snapshot_path, "snapshot written (copy fallback)");
+                                    }
+                                    Err(copy_err) => {
+                                        warn!(target: "reth::cli", ?copy_err, dest = ?snapshot_path, "failed to write snapshot via copy fallback");
+                                    }
+                                }
+                            }
+                        }
+
                         drop(guard);
                     }
                 );
             } else {
-                warn!(target: "reth::cli", "snapshot enabled but no GCS bucket configured; skipping snapshot backup");
+                warn!(target: "reth::cli", "snapshot enabled but no snapshots dir configured; skipping snapshot backup");
             }
         }
 

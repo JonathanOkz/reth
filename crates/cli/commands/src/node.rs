@@ -348,6 +348,12 @@ where
                         if std::env::var("RETH_SNAPSHOT_MDBX_THROTTLE_MVCC").ok().as_deref() == Some("1") {
                             flags |= CopyFlags::THROTTLE_MVCC;
                         }
+                        if std::env::var("RETH_SNAPSHOT_MDBX_COMPACT").ok().as_deref() == Some("1") {
+                            flags |= CopyFlags::COMPACT;
+                        }
+                        if std::env::var("RETH_SNAPSHOT_MDBX_FORCE_DYNAMIC_SIZE").ok().as_deref() == Some("1") {
+                            flags |= CopyFlags::FORCE_DYNAMIC_SIZE;
+                        }
 
                         let local_tmp = db_path_for_snapshot_task
                             .join(format!("mdbx.snapshot.tmp-{}", std::process::id()));

@@ -225,16 +225,9 @@ where
             path.push("mdbx.dat.zst");
             path
         });
-        let snapshot_path_dat = snapshots_base_dir.as_ref().map(|base| {
-            let mut path = base.clone();
-            path.push("mdbx.dat");
-            path
-        });
 
         if snapshot.snapshot_enabled {
-            if let (Some(snapshot_path_zst), Some(snapshot_path_dat)) =
-                (snapshot_path_zst.as_ref(), snapshot_path_dat.as_ref())
-            {
+            if let Some(snapshot_path_zst) = snapshot_path_zst.as_ref() {
                 let db_file = db_path.join("mdbx.dat");
                 if let Some(parent) = db_file.parent() {
                     if let Err(err) = tokio::fs::create_dir_all(parent).await {
@@ -248,33 +241,18 @@ where
                     .await
                     .map(|m| m.len())
                     .unwrap_or(0);
-                let snapshot_dat_len = tokio::fs::metadata(snapshot_path_dat)
-                    .await
-                    .map(|m| m.len())
-                    .unwrap_or(0);
 
-                let (snapshot_src_path, snapshot_is_zst) = if snapshot_zst_len > 0 {
-                    (snapshot_path_zst.clone(), true)
-                } else if snapshot_dat_len > 0 {
-                    (snapshot_path_dat.clone(), false)
-                } else {
+                if snapshot_zst_len == 0 {
                     tracing::error!(
                         target: "reth::cli",
-                        zst = ?snapshot_path_zst,
-                        dat = ?snapshot_path_dat,
+                        path = ?snapshot_path_zst,
                         "no snapshot found, skipping restore"
                     );
-                    (PathBuf::new(), false)
-                };
-
-                if snapshot_src_path.as_os_str().is_empty() {
-                    // no snapshot
                 } else {
 
                 let restore_started = Instant::now();
-                let snapshot_src = snapshot_src_path;
+                let snapshot_src = snapshot_path_zst.clone();
                 let snapshot_src_for_logs = snapshot_src.clone();
-                let snapshot_is_zst = snapshot_is_zst;
                 let tmp_path_for_restore = tmp_path.clone();
                 let db_file_for_restore = db_file.clone();
                 let restore_res = tokio::task::spawn_blocking(move || {
@@ -310,22 +288,8 @@ where
                         .write(true)
                         .open(&tmp_path_for_restore)?;
 
-                    let written = if snapshot_is_zst {
-                        let decoder = ZstdDecoder::new(src_file)?;
-                        copy_large(decoder, dst)?
-                    } else {
-                        let _ = dst.set_len(src_len);
-                        let written = copy_large(src_file, dst)?;
-                        if written != src_len {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Other,
-                                format!(
-                                    "short write restoring snapshot: expected {src_len} bytes, wrote {written} bytes"
-                                ),
-                            ))
-                        }
-                        written
-                    };
+                    let decoder = ZstdDecoder::new(src_file)?;
+                    let written = copy_large(decoder, dst)?;
 
                     if written == 0 {
                         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "restored db is empty"))
@@ -385,7 +349,7 @@ where
         };
 
         if snapshot.snapshot_enabled {
-            if let (Some(snapshot_path_zst), Some(snapshot_path_dat)) = (snapshot_path_zst, snapshot_path_dat) {
+            if let Some(snapshot_path_zst) = snapshot_path_zst {
                 let db_path_for_snapshot_task = db_path.clone();
                 let database = database.clone();
                 ctx.task_executor.spawn_critical_with_graceful_shutdown_signal(
@@ -523,7 +487,6 @@ where
                         let _ = tokio::fs::remove_file(&local_tmp).await;
 
                         let _ = tokio::fs::remove_file(&snapshot_path_zst).await;
-                        let _ = tokio::fs::remove_file(&snapshot_path_dat).await;
 
                         let upload_started = Instant::now();
                         let local_tmp_for_upload = local_tmp_zst.clone();

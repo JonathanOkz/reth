@@ -228,10 +228,15 @@ where
 
         if snapshot.snapshot_enabled {
             if let Some(snapshot_path_zst) = snapshot_path_zst.as_ref() {
+                tracing::error!(
+                    target: "reth::cli",
+                    path = ?snapshot_path_zst,
+                    "snapshot enabled: restore expects mdbx.dat.zst only; backup runs only on graceful shutdown"
+                );
                 let db_file = db_path.join("mdbx.dat");
                 if let Some(parent) = db_file.parent() {
                     if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                        warn!(target: "reth::cli", ?err, path = ?parent, "failed to create db dir");
+                        tracing::error!(target: "reth::cli", ?err, path = ?parent, "failed to create db dir");
                     }
                 }
 
@@ -302,7 +307,7 @@ where
 
                 match restore_res {
                     Ok(Ok(())) => {
-                        tracing::info!(
+                        tracing::error!(
                             target: "reth::cli",
                             path = ?snapshot_src_for_logs,
                             elapsed_ms = restore_started.elapsed().as_millis(),
@@ -324,7 +329,7 @@ where
                 }
                 }
             } else {
-                warn!(target: "reth::cli", "snapshot enabled but no snapshots dir configured; skipping snapshot restore");
+                tracing::error!(target: "reth::cli", "snapshot enabled but no snapshots dir configured; skipping snapshot restore");
             }
         }
 
@@ -355,11 +360,18 @@ where
                 ctx.task_executor.spawn_critical_with_graceful_shutdown_signal(
                     "mdbx-snapshot-file",
                     move |shutdown| async move {
+                        tracing::error!(
+                            target: "reth::cli",
+                            path = ?snapshot_path_zst,
+                            "mdbx snapshot task armed; waiting for graceful shutdown"
+                        );
                         let guard = shutdown.await;
+
+                        tracing::error!(target: "reth::cli", "graceful shutdown received, starting snapshot");
 
                         if let Some(parent) = snapshot_path_zst.parent() {
                             if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                                warn!(target: "reth::cli", ?err, path = ?parent, "failed to create snapshots dir");
+                                tracing::error!(target: "reth::cli", ?err, path = ?parent, "failed to create snapshots dir");
                             }
                         }
 
@@ -387,7 +399,7 @@ where
 
                         match snapshot_res {
                             Ok(Ok(())) => {
-                                tracing::info!(
+                                tracing::error!(
                                     target: "reth::cli",
                                     path = ?local_tmp,
                                     elapsed_ms = snapshot_started.elapsed().as_millis(),
@@ -395,13 +407,13 @@ where
                                 );
                             }
                             Ok(Err(err)) => {
-                                warn!(target: "reth::cli", err = %err, "failed to snapshot mdbx");
+                                tracing::error!(target: "reth::cli", err = %err, "failed to snapshot mdbx");
                                 let _ = tokio::fs::remove_file(&local_tmp).await;
                                 drop(guard);
                                 return
                             }
                             Err(err) => {
-                                warn!(target: "reth::cli", err = %err, "snapshot task join error");
+                                tracing::error!(target: "reth::cli", err = %err, "snapshot task join error");
                                 let _ = tokio::fs::remove_file(&local_tmp).await;
                                 drop(guard);
                                 return
@@ -461,7 +473,7 @@ where
 
                         match compress_res {
                             Ok(Ok(())) => {
-                                tracing::info!(
+                                tracing::error!(
                                     target: "reth::cli",
                                     path = ?local_tmp_zst,
                                     elapsed_ms = compress_started.elapsed().as_millis(),
@@ -537,7 +549,7 @@ where
 
                         match upload_res {
                             Ok(Ok(_)) => {
-                                tracing::info!(
+                                tracing::error!(
                                     target: "reth::cli",
                                     path = ?snapshot_path_zst,
                                     elapsed_ms = upload_started.elapsed().as_millis(),
@@ -566,7 +578,7 @@ where
                     }
                 );
             } else {
-                warn!(target: "reth::cli", "snapshot enabled but no snapshots dir configured; skipping snapshot backup");
+                tracing::error!(target: "reth::cli", "snapshot enabled but no snapshots dir configured; skipping snapshot backup");
             }
         }
 

@@ -238,7 +238,37 @@ where
                 let db_file_for_restore = db_file.clone();
                 let restore_res = tokio::task::spawn_blocking(move || {
                     let _ = std::fs::remove_file(&tmp_path_for_restore);
-                    std::fs::copy(&snapshot_src, &tmp_path_for_restore)?;
+                    fn copy_large(mut src: std::fs::File, mut dst: std::fs::File) -> io::Result<u64> {
+                        use std::io::{Read, Write};
+
+                        let mut buf = vec![0u8; 8 * 1024 * 1024];
+                        let mut written = 0u64;
+                        loop {
+                            let n = match src.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => n,
+                                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                                Err(e) => return Err(e),
+                            };
+                            dst.write_all(&buf[..n])?;
+                            written += n as u64;
+                        }
+                        Ok(written)
+                    }
+
+                    let src = std::fs::File::open(&snapshot_src)?;
+                    let len = src.metadata().map(|m| m.len()).ok();
+                    let dst = std::fs::OpenOptions::new()
+                        .create(true)
+                        .truncate(true)
+                        .write(true)
+                        .open(&tmp_path_for_restore)?;
+                    if let Some(len) = len {
+                        let _ = dst.set_len(len);
+                    }
+                    let dst_for_copy = dst.try_clone()?;
+                    drop(dst);
+                    let _ = copy_large(src, dst_for_copy)?;
                     std::fs::rename(&tmp_path_for_restore, &db_file_for_restore)?;
                     Ok::<_, io::Error>(())
                 })
@@ -280,10 +310,28 @@ where
         }
 
         tracing::info!(target: "reth::cli", path = ?db_path, "Opening database");
-        let database = Arc::new(init_db(db_path.clone(), db.database_args())?.with_metrics());
+        let database = match init_db(db_path.clone(), db.database_args()) {
+            Ok(db) => Arc::new(db.with_metrics()),
+            Err(err) => {
+                if snapshot.snapshot_enabled {
+                    warn!(
+                        target: "reth::cli",
+                        err = %err,
+                        path = ?db_path,
+                        "failed to open database after snapshot restore; removing restored db and continuing without snapshot"
+                    );
+                    let _ = tokio::fs::remove_file(db_path.join("mdbx.dat")).await;
+                    let _ = tokio::fs::remove_file(db_path.join("mdbx.lck")).await;
+                    Arc::new(init_db(db_path.clone(), db.database_args())?.with_metrics())
+                } else {
+                    return Err(err);
+                }
+            }
+        };
 
         if snapshot.snapshot_enabled {
             if let Some(snapshot_path) = snapshot_path {
+                let db_path_for_snapshot_task = db_path.clone();
                 let database = database.clone();
                 ctx.task_executor.spawn_critical_with_graceful_shutdown_signal(
                     "mdbx-snapshot-file",
@@ -301,16 +349,17 @@ where
                             flags |= CopyFlags::THROTTLE_MVCC;
                         }
 
-                        let dest_tmp = snapshot_path.with_extension(format!("tmp-{}", std::process::id()));
+                        let local_tmp = db_path_for_snapshot_task
+                            .join(format!("mdbx.snapshot.tmp-{}", std::process::id()));
 
                         let snapshot_started = Instant::now();
                         let db_for_snapshot = database.clone();
                         let flags_for_snapshot = flags;
-                        let dest_tmp_for_snapshot = dest_tmp.clone();
+                        let local_tmp_for_snapshot = local_tmp.clone();
                         let snapshot_res = tokio::task::spawn_blocking(move || {
-                            let _ = std::fs::remove_file(&dest_tmp_for_snapshot);
+                            let _ = std::fs::remove_file(&local_tmp_for_snapshot);
                             db_for_snapshot
-                                .snapshot_to_path(&dest_tmp_for_snapshot, flags_for_snapshot)
+                                .snapshot_to_path(&local_tmp_for_snapshot, flags_for_snapshot)
                                 .map_err(|e| e.to_string())
                         })
                         .await;
@@ -319,48 +368,46 @@ where
                             Ok(Ok(())) => {
                                 tracing::info!(
                                     target: "reth::cli",
-                                    path = ?dest_tmp,
+                                    path = ?local_tmp,
                                     elapsed_ms = snapshot_started.elapsed().as_millis(),
                                     "mdbx snapshot created"
                                 );
                             }
                             Ok(Err(err)) => {
                                 warn!(target: "reth::cli", err = %err, "failed to snapshot mdbx");
-                                let _ = tokio::fs::remove_file(&dest_tmp).await;
+                                let _ = tokio::fs::remove_file(&local_tmp).await;
                                 drop(guard);
                                 return
                             }
                             Err(err) => {
                                 warn!(target: "reth::cli", err = %err, "snapshot task join error");
-                                let _ = tokio::fs::remove_file(&dest_tmp).await;
+                                let _ = tokio::fs::remove_file(&local_tmp).await;
                                 drop(guard);
                                 return
                             }
                         }
 
-                        let finalize_started = Instant::now();
-                        match tokio::fs::rename(&dest_tmp, &snapshot_path).await {
-                            Ok(()) => {
+                        let _ = tokio::fs::remove_file(&snapshot_path).await;
+
+                        let upload_started = Instant::now();
+                        match tokio::fs::copy(&local_tmp, &snapshot_path).await {
+                            Ok(_) => {
                                 tracing::info!(
                                     target: "reth::cli",
                                     path = ?snapshot_path,
-                                    elapsed_ms = finalize_started.elapsed().as_millis(),
-                                    "snapshot written"
+                                    elapsed_ms = upload_started.elapsed().as_millis(),
+                                    "snapshot uploaded"
                                 );
                             }
                             Err(err) => {
-                                warn!(target: "reth::cli", ?err, dest = ?snapshot_path, "failed to finalize snapshot write, trying copy fallback");
-                                match tokio::fs::copy(&dest_tmp, &snapshot_path).await {
-                                    Ok(_) => {
-                                        let _ = tokio::fs::remove_file(&dest_tmp).await;
-                                        tracing::info!(target: "reth::cli", path = ?snapshot_path, "snapshot written (copy fallback)");
-                                    }
-                                    Err(copy_err) => {
-                                        warn!(target: "reth::cli", ?copy_err, dest = ?snapshot_path, "failed to write snapshot via copy fallback");
-                                    }
-                                }
+                                warn!(target: "reth::cli", ?err, dest = ?snapshot_path, "failed to upload snapshot");
+                                let _ = tokio::fs::remove_file(&local_tmp).await;
+                                drop(guard);
+                                return
                             }
                         }
+
+                        let _ = tokio::fs::remove_file(&local_tmp).await;
 
                         drop(guard);
                     }

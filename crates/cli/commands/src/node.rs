@@ -387,11 +387,65 @@ where
                             }
                         }
 
+                        let src_len = match tokio::fs::metadata(&local_tmp).await {
+                            Ok(m) => m.len(),
+                            Err(_) => 0,
+                        };
+                        if src_len == 0 {
+                            tracing::error!(target: "reth::cli", path = ?local_tmp, "mdbx snapshot file is empty");
+                            let _ = tokio::fs::remove_file(&local_tmp).await;
+                            drop(guard);
+                            return
+                        }
+
                         let _ = tokio::fs::remove_file(&snapshot_path).await;
 
                         let upload_started = Instant::now();
-                        match tokio::fs::copy(&local_tmp, &snapshot_path).await {
-                            Ok(_) => {
+                        let local_tmp_for_upload = local_tmp.clone();
+                        let snapshot_path_for_upload = snapshot_path.clone();
+                        let upload_res = tokio::task::spawn_blocking(move || {
+                            use std::io::{Read, Write};
+
+                            fn copy_large(mut src: std::fs::File, mut dst: std::fs::File) -> io::Result<u64> {
+                                let mut buf = vec![0u8; 8 * 1024 * 1024];
+                                let mut written = 0u64;
+                                loop {
+                                    let n = match src.read(&mut buf) {
+                                        Ok(0) => break,
+                                        Ok(n) => n,
+                                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                                        Err(e) => return Err(e),
+                                    };
+                                    dst.write_all(&buf[..n])?;
+                                    written += n as u64;
+                                }
+                                dst.flush()?;
+                                let _ = dst.sync_all();
+                                Ok(written)
+                            }
+
+                            let src = std::fs::File::open(&local_tmp_for_upload)?;
+                            let src_len = src.metadata()?.len();
+                            let dst = std::fs::OpenOptions::new()
+                                .create(true)
+                                .truncate(true)
+                                .write(true)
+                                .open(&snapshot_path_for_upload)?;
+                            let written = copy_large(src, dst)?;
+
+                            if written != src_len {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    format!("short write uploading snapshot: expected {src_len} bytes, wrote {written} bytes"),
+                                ));
+                            }
+
+                            Ok::<_, io::Error>(written)
+                        })
+                        .await;
+
+                        match upload_res {
+                            Ok(Ok(_)) => {
                                 tracing::info!(
                                     target: "reth::cli",
                                     path = ?snapshot_path,
@@ -399,8 +453,16 @@ where
                                     "snapshot uploaded"
                                 );
                             }
+                            Ok(Err(err)) => {
+                                tracing::error!(target: "reth::cli", err = %err, dest = ?snapshot_path, "failed to upload snapshot");
+                                let _ = tokio::fs::remove_file(&snapshot_path).await;
+                                let _ = tokio::fs::remove_file(&local_tmp).await;
+                                drop(guard);
+                                return
+                            }
                             Err(err) => {
-                                warn!(target: "reth::cli", ?err, dest = ?snapshot_path, "failed to upload snapshot");
+                                tracing::error!(target: "reth::cli", err = %err, dest = ?snapshot_path, "snapshot upload task join error");
+                                let _ = tokio::fs::remove_file(&snapshot_path).await;
                                 let _ = tokio::fs::remove_file(&local_tmp).await;
                                 drop(guard);
                                 return

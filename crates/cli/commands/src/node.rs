@@ -253,22 +253,30 @@ where
                             dst.write_all(&buf[..n])?;
                             written += n as u64;
                         }
+                        dst.flush()?;
+                        let _ = dst.sync_all();
                         Ok(written)
                     }
 
                     let src = std::fs::File::open(&snapshot_src)?;
-                    let len = src.metadata().map(|m| m.len()).ok();
+                    let src_len = src.metadata().map(|m| m.len())?;
+                    if src_len == 0 {
+                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "snapshot source is empty"))
+                    }
+
                     let dst = std::fs::OpenOptions::new()
                         .create(true)
                         .truncate(true)
                         .write(true)
                         .open(&tmp_path_for_restore)?;
-                    if let Some(len) = len {
-                        let _ = dst.set_len(len);
+                    let _ = dst.set_len(src_len);
+                    let written = copy_large(src, dst)?;
+                    if written != src_len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("short write restoring snapshot: expected {src_len} bytes, wrote {written} bytes"),
+                        ))
                     }
-                    let dst_for_copy = dst.try_clone()?;
-                    drop(dst);
-                    let _ = copy_large(src, dst_for_copy)?;
                     std::fs::rename(&tmp_path_for_restore, &db_file_for_restore)?;
                     Ok::<_, io::Error>(())
                 })
@@ -285,23 +293,15 @@ where
                         let _ = tokio::fs::remove_file(db_path.join("mdbx.lck")).await;
                     }
                     Ok(Err(err)) if err.kind() == io::ErrorKind::NotFound => {
-                        tracing::info!(target: "reth::cli", path = ?snapshot_path, "no snapshot found, skipping restore");
+                        tracing::error!(target: "reth::cli", err = %err, path = ?snapshot_path, "no snapshot found, skipping restore");
                     }
                     Ok(Err(err)) => {
                         let _ = tokio::fs::remove_file(&tmp_path).await;
-                        warn!(
-                            target: "reth::cli",
-                            err = %err,
-                            "snapshot restore failed, continuing without restore"
-                        );
+                        tracing::error!(target: "reth::cli", err = %err, src = ?snapshot_path, dest = ?db_file, "snapshot restore failed, continuing without restore");
                     }
                     Err(err) => {
                         let _ = tokio::fs::remove_file(&tmp_path).await;
-                        warn!(
-                            target: "reth::cli",
-                            err = %err,
-                            "snapshot restore task join error, continuing without restore"
-                        );
+                        tracing::error!(target: "reth::cli", err = %err, src = ?snapshot_path, dest = ?db_file, "snapshot restore task join error, continuing without restore");
                     }
                 }
             } else {
@@ -314,7 +314,7 @@ where
             Ok(db) => Arc::new(db.with_metrics()),
             Err(err) => {
                 if snapshot.snapshot_enabled {
-                    warn!(
+                    tracing::error!(
                         target: "reth::cli",
                         err = %err,
                         path = ?db_path,

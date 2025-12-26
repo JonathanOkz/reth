@@ -595,8 +595,23 @@ where
                                 ));
                             }
 
-                            let _ = std::fs::remove_file(&snapshot_path_for_upload);
-                            std::fs::rename(&dest_tmp, &snapshot_path_for_upload)?;
+                            let dest_backup = dest_parent.join(format!("mdbx.dat.zst.bak-{}", pid));
+                            let _ = std::fs::remove_file(&dest_backup);
+                            let moved_old = std::fs::rename(&snapshot_path_for_upload, &dest_backup).is_ok();
+
+                            match std::fs::rename(&dest_tmp, &snapshot_path_for_upload) {
+                                Ok(()) => {
+                                    if moved_old {
+                                        let _ = std::fs::remove_file(&dest_backup);
+                                    }
+                                }
+                                Err(err) => {
+                                    if moved_old {
+                                        let _ = std::fs::rename(&dest_backup, &snapshot_path_for_upload);
+                                    }
+                                    return Err(err)
+                                }
+                            }
 
                             Ok::<_, io::Error>(written)
                         })

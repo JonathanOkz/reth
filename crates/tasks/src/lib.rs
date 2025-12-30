@@ -242,12 +242,12 @@ impl TaskManager {
     fn do_graceful_shutdown(self, timeout: Option<std::time::Duration>) -> bool {
         drop(self.signal);
         let when = timeout.map(|t| std::time::Instant::now() + t);
-        while self.graceful_tasks.load(Ordering::Relaxed) > 0 {
+        while self.graceful_tasks.load(Ordering::SeqCst) > 0 {
             if when.map(|when| std::time::Instant::now() > when).unwrap_or(false) {
                 debug!("graceful shutdown timed out");
                 return false
             }
-            std::hint::spin_loop();
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
         debug!("gracefully shut down");

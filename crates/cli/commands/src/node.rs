@@ -399,10 +399,18 @@ where
                             }
                         }
 
+                        let _ = tokio::fs::remove_file(stage_dir.join("mdbx.dat")).await;
+
                         if let Some(parent) = snapshot_path_zst.parent() {
                             if let Err(err) = tokio::fs::create_dir_all(parent).await {
                                 tracing::error!(target: "reth::cli", ?err, path = ?parent, "failed to create snapshots dir");
+                                drop(guard);
+                                return
                             }
+                        } else {
+                            tracing::error!(target: "reth::cli", path = ?snapshot_path_zst, "snapshot destination has no parent");
+                            drop(guard);
+                            return
                         }
 
                         let mut flags = CopyFlags::DONT_FLUSH | CopyFlags::COMPACT | CopyFlags::FORCE_DYNAMIC_SIZE;
@@ -410,19 +418,21 @@ where
                             flags |= CopyFlags::THROTTLE_MVCC;
                         }
 
-                        let staged_snapshot_tmp = stage_dir.join(format!("mdbx.dat.tmp-{}", pid));
-                        let staged_snapshot_dat = stage_dir.join("mdbx.dat");
+                        let staged_snapshot_dir_tmp = stage_dir.join(format!("mdbx.snapshot.tmp-{}", pid));
+                        let staged_snapshot_dat = staged_snapshot_dir_tmp.join("mdbx.dat");
                         let staged_zst_tmp = stage_dir.join(format!("mdbx.dat.zst.tmp-{}", pid));
                         let staged_zst = stage_dir.join("mdbx.dat.zst");
 
                         let snapshot_started = Instant::now();
                         let db_for_snapshot = database.clone();
                         let flags_for_snapshot = flags;
-                        let staged_snapshot_tmp_for_snapshot = staged_snapshot_tmp.clone();
+                        let staged_snapshot_dir_tmp_for_snapshot = staged_snapshot_dir_tmp.clone();
                         let snapshot_res = tokio::task::spawn_blocking(move || {
-                            let _ = std::fs::remove_file(&staged_snapshot_tmp_for_snapshot);
+                            let _ = std::fs::remove_dir_all(&staged_snapshot_dir_tmp_for_snapshot);
+                            std::fs::create_dir_all(&staged_snapshot_dir_tmp_for_snapshot)
+                                .map_err(|e| e.to_string())?;
                             db_for_snapshot
-                                .snapshot_to_path(&staged_snapshot_tmp_for_snapshot, flags_for_snapshot)
+                                .snapshot_to_path(&staged_snapshot_dir_tmp_for_snapshot, flags_for_snapshot)
                                 .map_err(|e| e.to_string())
                         })
                         .await;
@@ -431,31 +441,23 @@ where
                             Ok(Ok(())) => {
                                 tracing::error!(
                                     target: "reth::cli",
-                                    path = ?staged_snapshot_tmp,
+                                    path = ?staged_snapshot_dat,
                                     elapsed_ms = snapshot_started.elapsed().as_millis(),
                                     "mdbx snapshot created"
                                 );
                             }
                             Ok(Err(err)) => {
                                 tracing::error!(target: "reth::cli", err = %err, "failed to snapshot mdbx");
-                                let _ = tokio::fs::remove_file(&staged_snapshot_tmp).await;
+                                let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
                                 drop(guard);
                                 return
                             }
                             Err(err) => {
                                 tracing::error!(target: "reth::cli", err = %err, "snapshot task join error");
-                                let _ = tokio::fs::remove_file(&staged_snapshot_tmp).await;
+                                let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
                                 drop(guard);
                                 return
                             }
-                        }
-
-                        let _ = tokio::fs::remove_file(&staged_snapshot_dat).await;
-                        if let Err(err) = tokio::fs::rename(&staged_snapshot_tmp, &staged_snapshot_dat).await {
-                            tracing::error!(target: "reth::cli", err = %err, src = ?staged_snapshot_tmp, dest = ?staged_snapshot_dat, "failed to finalize staged snapshot");
-                            let _ = tokio::fs::remove_file(&staged_snapshot_tmp).await;
-                            drop(guard);
-                            return
                         }
 
                         let src_len = match tokio::fs::metadata(&staged_snapshot_dat).await {
@@ -464,10 +466,17 @@ where
                         };
                         if src_len == 0 {
                             tracing::error!(target: "reth::cli", path = ?staged_snapshot_dat, "mdbx snapshot file is empty");
-                            let _ = tokio::fs::remove_file(&staged_snapshot_dat).await;
+                            let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
                             drop(guard);
                             return
                         }
+
+                        tracing::error!(
+                            target: "reth::cli",
+                            path = ?staged_snapshot_dat,
+                            src_len,
+                            "starting snapshot compression"
+                        );
 
                         let compress_started = Instant::now();
                         let staged_snapshot_dat_for_compress = staged_snapshot_dat.clone();
@@ -520,14 +529,14 @@ where
                             }
                             Ok(Err(err)) => {
                                 tracing::error!(target: "reth::cli", err = %err, "failed to compress snapshot");
-                                let _ = tokio::fs::remove_file(&staged_snapshot_dat).await;
+                                let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
                                 let _ = tokio::fs::remove_file(&staged_zst_tmp).await;
                                 drop(guard);
                                 return
                             }
                             Err(err) => {
                                 tracing::error!(target: "reth::cli", err = %err, "snapshot compress task join error");
-                                let _ = tokio::fs::remove_file(&staged_snapshot_dat).await;
+                                let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
                                 let _ = tokio::fs::remove_file(&staged_zst_tmp).await;
                                 drop(guard);
                                 return
@@ -538,12 +547,12 @@ where
                         if let Err(err) = tokio::fs::rename(&staged_zst_tmp, &staged_zst).await {
                             tracing::error!(target: "reth::cli", err = %err, src = ?staged_zst_tmp, dest = ?staged_zst, "failed to finalize compressed snapshot");
                             let _ = tokio::fs::remove_file(&staged_zst_tmp).await;
-                            let _ = tokio::fs::remove_file(&staged_snapshot_dat).await;
+                            let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
                             drop(guard);
                             return
                         }
 
-                        let _ = tokio::fs::remove_file(&staged_snapshot_dat).await;
+                        let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
 
                         let upload_started = Instant::now();
                         let staged_zst_for_upload = staged_zst.clone();
@@ -628,13 +637,11 @@ where
                             }
                             Ok(Err(err)) => {
                                 tracing::error!(target: "reth::cli", err = %err, dest = ?snapshot_path_zst, "failed to upload snapshot");
-                                let _ = tokio::fs::remove_file(&snapshot_path_zst).await;
                                 drop(guard);
                                 return
                             }
                             Err(err) => {
                                 tracing::error!(target: "reth::cli", err = %err, dest = ?snapshot_path_zst, "snapshot upload task join error");
-                                let _ = tokio::fs::remove_file(&snapshot_path_zst).await;
                                 drop(guard);
                                 return
                             }

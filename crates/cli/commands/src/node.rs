@@ -358,6 +358,16 @@ async fn maybe_run_snapshot_backup(
             .parent()
             .map(|p| p.to_path_buf())
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "snapshot destination has no parent"))?;
+
+        let dest_len = std::fs::metadata(&snapshot_path_for_upload).map(|m| m.len()).unwrap_or(0);
+
+        if dest_len > 0 && src_len < dest_len / 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("refusing to overwrite larger existing snapshot ({dest_len} bytes) with smaller one ({src_len} bytes)"),
+            ))
+        }
+
         let dest_tmp = dest_parent.join(format!("mdbx.dat.zst.tmp-{}", pid));
         let _ = std::fs::remove_file(&dest_tmp);
 
@@ -383,9 +393,7 @@ async fn maybe_run_snapshot_backup(
 
         match std::fs::rename(&dest_tmp, &snapshot_path_for_upload) {
             Ok(()) => {
-                if moved_old {
-                    let _ = std::fs::remove_file(&dest_backup);
-                }
+                let _ = moved_old;
             }
             Err(err) => {
                 if moved_old {
@@ -641,165 +649,206 @@ where
                     "snapshot enabled: restore expects mdbx.dat.zst (tar.zst: db/ + static_files/); backup runs on shutdown"
                 );
 
-                if let Some(parent) = db_path.parent() {
-                    if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                        tracing::error!(target: "reth::cli", ?err, path = ?parent, "failed to create chain data dir");
-                    }
-                }
+                let force_restore = std::env::var("RETH_SNAPSHOT_FORCE_RESTORE")
+                    .ok()
+                    .as_deref()
+                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
-                let snapshot_zst_len = tokio::fs::metadata(snapshot_path_zst)
+                let existing_db_len = tokio::fs::metadata(db_path.join("mdbx.dat"))
                     .await
                     .map(|m| m.len())
                     .unwrap_or(0);
+                let existing_static_files_any = match tokio::fs::read_dir(&static_files_path).await {
+                    Ok(mut dir) => dir.next_entry().await.ok().flatten().is_some(),
+                    Err(_) => false,
+                };
 
-                if snapshot_zst_len == 0 {
-                    tracing::error!(
+                if !force_restore && (existing_db_len > 0 || existing_static_files_any) {
+                    tracing::warn!(
                         target: "reth::cli",
-                        path = ?snapshot_path_zst,
-                        "no snapshot found, skipping restore"
+                        existing_db_len,
+                        existing_static_files_any,
+                        "existing datadir detected, skipping snapshot restore (set RETH_SNAPSHOT_FORCE_RESTORE=1 to override)"
                     );
                 } else {
-
-                let restore_started = Instant::now();
-                let snapshot_src = snapshot_path_zst.clone();
-                let snapshot_src_for_logs = snapshot_src.clone();
-                let db_dir_for_restore = db_path.clone();
-                let static_files_dir_for_restore = static_files_path.clone();
-                let restore_res = tokio::task::spawn_blocking(move || {
-                    let chain_dir = db_dir_for_restore
-                        .parent()
-                        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "db dir has no parent"))?
-                        .to_path_buf();
-
-                    let pid = std::process::id();
-                    let restore_tmp_dir = chain_dir.join(format!("snapshot.restore.tmp-{}", pid));
-                    let _ = std::fs::remove_dir_all(&restore_tmp_dir);
-                    std::fs::create_dir_all(&restore_tmp_dir)?;
-
-                    fn copy_large(
-                        mut src: impl std::io::Read,
-                        mut dst: std::fs::File,
-                    ) -> io::Result<u64> {
-                        use std::io::Write;
-                        let mut buf = vec![0u8; 8 * 1024 * 1024];
-                        let mut written = 0u64;
-                        loop {
-                            let n = match src.read(&mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => n,
-                                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                                Err(e) => return Err(e),
-                            };
-                            dst.write_all(&buf[..n])?;
-                            written += n as u64;
-                        }
-                        dst.flush()?;
-                        let _ = dst.sync_all();
-                        Ok(written)
-                    }
-
-                    let restored_db_dir = restore_tmp_dir.join("db");
-                    let restored_db_file = restored_db_dir.join("mdbx.dat");
-                    let restored_static_files_dir = restore_tmp_dir.join("static_files");
-
-                    let unpacked_static_files = {
-                        let src_file = std::fs::File::open(&snapshot_src)?;
-                        let src_len = src_file.metadata().map(|m| m.len())?;
-                        if src_len == 0 {
-                            return Err(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "snapshot source is empty",
-                            ))
-                        }
-
-                        let decoder = ZstdDecoder::new(src_file)?;
-                        let mut archive = TarArchive::new(decoder);
-                        archive.unpack(&restore_tmp_dir).is_ok()
-                    };
-
-                    if !unpacked_static_files {
-                        let _ = std::fs::remove_dir_all(&restore_tmp_dir);
-                        std::fs::create_dir_all(&restore_tmp_dir)?;
-                        std::fs::create_dir_all(&restored_db_dir)?;
-
-                        let src_file = std::fs::File::open(&snapshot_src)?;
-                        let decoder = ZstdDecoder::new(src_file)?;
-                        let dst = std::fs::OpenOptions::new()
-                            .create(true)
-                            .truncate(true)
-                            .write(true)
-                            .open(&restored_db_file)?;
-                        let written = copy_large(decoder, dst)?;
-                        if written == 0 {
-                            return Err(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "restored db is empty",
-                            ))
+                    if let Some(parent) = db_path.parent() {
+                        if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                            tracing::error!(target: "reth::cli", ?err, path = ?parent, "failed to create chain data dir");
                         }
                     }
 
-                    let restored_db_len = restored_db_file.metadata().map(|m| m.len()).unwrap_or(0);
-                    if restored_db_len == 0 {
-                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "restored db is empty"))
-                    }
+                    let snapshot_zst_len = tokio::fs::metadata(snapshot_path_zst)
+                        .await
+                        .map(|m| m.len())
+                        .unwrap_or(0);
 
-                    if unpacked_static_files {
-                        let static_files_has_any = std::fs::read_dir(&restored_static_files_dir)
-                            .ok()
-                            .and_then(|mut it| it.next())
-                            .is_some();
-                        if !static_files_has_any {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "snapshot does not contain static_files; regenerate snapshot",
-                            ))
-                        }
-                    } else {
-                        let static_files_has_any = std::fs::read_dir(&static_files_dir_for_restore)
-                            .ok()
-                            .and_then(|mut it| it.next())
-                            .is_some();
-                        if !static_files_has_any {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "legacy snapshot restored db only, but static_files are missing on disk; regenerate snapshot",
-                            ))
-                        }
-                    }
-
-                    let _ = std::fs::remove_dir_all(&db_dir_for_restore);
-                    std::fs::rename(&restored_db_dir, &db_dir_for_restore)?;
-
-                    if unpacked_static_files {
-                        let _ = std::fs::remove_dir_all(&static_files_dir_for_restore);
-                        std::fs::rename(&restored_static_files_dir, &static_files_dir_for_restore)?;
-                    }
-
-                    let _ = std::fs::remove_dir_all(&restore_tmp_dir);
-                    Ok::<_, io::Error>(())
-                })
-                .await;
-
-                match restore_res {
-                    Ok(Ok(())) => {
+                    if snapshot_zst_len == 0 {
                         tracing::error!(
                             target: "reth::cli",
-                            path = ?snapshot_src_for_logs,
-                            elapsed_ms = restore_started.elapsed().as_millis(),
-                            "snapshot restored"
+                            path = ?snapshot_path_zst,
+                            "no snapshot found, skipping restore"
                         );
-                        let _ = tokio::fs::remove_file(db_path.join("mdbx.lck")).await;
+                    } else {
+                        let restore_started = Instant::now();
+                        let snapshot_src = snapshot_path_zst.clone();
+                        let snapshot_src_for_logs = snapshot_src.clone();
+                        let db_dir_for_restore = db_path.clone();
+                        let static_files_dir_for_restore = static_files_path.clone();
+                        let restore_res = tokio::task::spawn_blocking(move || {
+                            let chain_dir = db_dir_for_restore
+                                .parent()
+                                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "db dir has no parent"))?
+                                .to_path_buf();
+
+                            let pid = std::process::id();
+                            let restore_tmp_dir = chain_dir.join(format!("snapshot.restore.tmp-{}", pid));
+                            let _ = std::fs::remove_dir_all(&restore_tmp_dir);
+                            std::fs::create_dir_all(&restore_tmp_dir)?;
+
+                            fn copy_large(
+                                mut src: impl std::io::Read,
+                                mut dst: std::fs::File,
+                            ) -> io::Result<u64> {
+                                use std::io::Write;
+                                let mut buf = vec![0u8; 8 * 1024 * 1024];
+                                let mut written = 0u64;
+                                loop {
+                                    let n = match src.read(&mut buf) {
+                                        Ok(0) => break,
+                                        Ok(n) => n,
+                                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                                        Err(e) => return Err(e),
+                                    };
+                                    dst.write_all(&buf[..n])?;
+                                    written += n as u64;
+                                }
+                                dst.flush()?;
+                                let _ = dst.sync_all();
+                                Ok(written)
+                            }
+
+                            let restored_db_dir = restore_tmp_dir.join("db");
+                            let restored_db_file = restored_db_dir.join("mdbx.dat");
+                            let restored_static_files_dir = restore_tmp_dir.join("static_files");
+
+                            let unpacked_static_files = {
+                                let src_file = std::fs::File::open(&snapshot_src)?;
+                                let src_len = src_file.metadata().map(|m| m.len())?;
+                                if src_len == 0 {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::UnexpectedEof,
+                                        "snapshot source is empty",
+                                    ))
+                                }
+
+                                let decoder = ZstdDecoder::new(src_file)?;
+                                let mut archive = TarArchive::new(decoder);
+                                archive.unpack(&restore_tmp_dir).is_ok()
+                            };
+
+                            if !unpacked_static_files {
+                                let _ = std::fs::remove_dir_all(&restore_tmp_dir);
+                                std::fs::create_dir_all(&restore_tmp_dir)?;
+                                std::fs::create_dir_all(&restored_db_dir)?;
+
+                                let src_file = std::fs::File::open(&snapshot_src)?;
+                                let decoder = ZstdDecoder::new(src_file)?;
+                                let dst = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .truncate(true)
+                                    .write(true)
+                                    .open(&restored_db_file)?;
+                                let written = copy_large(decoder, dst)?;
+                                if written == 0 {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::UnexpectedEof,
+                                        "restored db is empty",
+                                    ))
+                                }
+                            }
+
+                            let restored_db_len =
+                                restored_db_file.metadata().map(|m| m.len()).unwrap_or(0);
+                            if restored_db_len == 0 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "restored db is empty",
+                                ))
+                            }
+
+                            let restored_static_files_file_count: u64 = if unpacked_static_files {
+                                let static_files_has_any = std::fs::read_dir(&restored_static_files_dir)
+                                    .ok()
+                                    .and_then(|mut it| it.next())
+                                    .is_some();
+                                if !static_files_has_any {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "snapshot does not contain static_files; regenerate snapshot",
+                                    ))
+                                }
+                                std::fs::read_dir(&restored_static_files_dir)
+                                    .ok()
+                                    .map(|it| it.filter(|e| e.is_ok()).count() as u64)
+                                    .unwrap_or(0)
+                            } else {
+                                let static_files_has_any = std::fs::read_dir(&static_files_dir_for_restore)
+                                    .ok()
+                                    .and_then(|mut it| it.next())
+                                    .is_some();
+                                if !static_files_has_any {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "legacy snapshot restored db only, but static_files are missing on disk; regenerate snapshot",
+                                    ))
+                                }
+                                0
+                            };
+
+                            let _ = std::fs::remove_dir_all(&db_dir_for_restore);
+                            std::fs::rename(&restored_db_dir, &db_dir_for_restore)?;
+
+                            if unpacked_static_files {
+                                let _ = std::fs::remove_dir_all(&static_files_dir_for_restore);
+                                std::fs::rename(
+                                    &restored_static_files_dir,
+                                    &static_files_dir_for_restore,
+                                )?;
+                            }
+
+                            let _ = std::fs::remove_dir_all(&restore_tmp_dir);
+                            Ok::<_, io::Error>((
+                                unpacked_static_files,
+                                restored_db_len,
+                                restored_static_files_file_count,
+                            ))
+                        })
+                        .await;
+
+                        match restore_res {
+                            Ok(Ok((unpacked_static_files, restored_db_len, restored_static_files_file_count))) => {
+                                tracing::info!(
+                                    target: "reth::cli",
+                                    path = ?snapshot_src_for_logs,
+                                    elapsed_ms = restore_started.elapsed().as_millis(),
+                                    unpacked_static_files,
+                                    restored_db_len,
+                                    restored_static_files_file_count,
+                                    "snapshot restored"
+                                );
+                                let _ = tokio::fs::remove_file(db_path.join("mdbx.lck")).await;
+                            }
+                            Ok(Err(err)) if err.kind() == io::ErrorKind::NotFound => {
+                                tracing::error!(target: "reth::cli", err = %err, path = ?snapshot_src_for_logs, "no snapshot found, skipping restore");
+                            }
+                            Ok(Err(err)) => {
+                                tracing::error!(target: "reth::cli", err = %err, src = ?snapshot_src_for_logs, dest = ?db_path, "snapshot restore failed, continuing without restore");
+                            }
+                            Err(err) => {
+                                tracing::error!(target: "reth::cli", err = %err, src = ?snapshot_src_for_logs, dest = ?db_path, "snapshot restore task join error, continuing without restore");
+                            }
+                        }
                     }
-                    Ok(Err(err)) if err.kind() == io::ErrorKind::NotFound => {
-                        tracing::error!(target: "reth::cli", err = %err, path = ?snapshot_src_for_logs, "no snapshot found, skipping restore");
-                    }
-                    Ok(Err(err)) => {
-                        tracing::error!(target: "reth::cli", err = %err, src = ?snapshot_src_for_logs, dest = ?db_path, "snapshot restore failed, continuing without restore");
-                    }
-                    Err(err) => {
-                        tracing::error!(target: "reth::cli", err = %err, src = ?snapshot_src_for_logs, dest = ?db_path, "snapshot restore task join error, continuing without restore");
-                    }
-                }
                 }
             } else {
                 tracing::error!(target: "reth::cli", "snapshot enabled but no snapshots dir configured; skipping snapshot restore");

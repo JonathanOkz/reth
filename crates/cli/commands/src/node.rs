@@ -224,11 +224,7 @@ where
         };
 
         let snapshots_zst_base_dir = if snapshot.snapshot_enabled {
-            snapshot.snapshots_zst_dir.as_ref().map(|dir| {
-                let mut path = dir.clone();
-                path.push(node_config.chain.chain_id().to_string());
-                path
-            })
+            snapshot.snapshots_zst_dir.as_ref().cloned()
         } else {
             None
         };
@@ -647,9 +643,6 @@ where
                                 return
                             }
                         }
-
-                        let _ = tokio::fs::remove_file(&staged_zst).await;
-
                         drop(guard);
                     }
                 );

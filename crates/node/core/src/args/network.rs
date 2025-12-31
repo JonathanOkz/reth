@@ -699,12 +699,12 @@ impl Default for DiscoveryArgs {
 /// Parse a block number=hash pair or just a hash into `BlockNumHash`
 fn parse_block_num_hash(s: &str) -> Result<BlockNumHash, String> {
     if let Some((num_str, hash_str)) = s.split_once('=') {
-        let number = num_str.parse().map_err(|_| format!("Invalid block number: {}", num_str))?;
-        let hash = B256::from_str(hash_str).map_err(|_| format!("Invalid hash: {}", hash_str))?;
+        let number = num_str.parse().map_err(|_| format!("Invalid block number: {num_str}"))?;
+        let hash = B256::from_str(hash_str).map_err(|_| format!("Invalid hash: {hash_str}"))?;
         Ok(BlockNumHash::new(number, hash))
     } else {
         // For backward compatibility, treat as hash-only with number 0
-        let hash = B256::from_str(s).map_err(|_| format!("Invalid hash: {}", s))?;
+        let hash = B256::from_str(s).map_err(|_| format!("Invalid hash: {s}"))?;
         Ok(BlockNumHash::new(0, hash))
     }
 }

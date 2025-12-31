@@ -68,7 +68,7 @@ impl CliRunner {
         // Executes the command until it finished or ctrl-c was fired
         let command_res = tokio_runtime.block_on(run_to_completion_or_panic(
             &mut task_manager,
-            run_until_ctrl_c(command(context)),
+            command(context),
         ));
 
         if command_res.is_err() {
@@ -133,9 +133,7 @@ impl CliRunner {
         // Wait for the command to complete or ctrl-c
         let command_res = tokio_runtime.block_on(run_to_completion_or_panic(
             &mut task_manager,
-            run_until_ctrl_c(
-                async move { command_handle.await.expect("Failed to join blocking task") },
-            ),
+            async move { command_handle.await.expect("Failed to join blocking task") },
         ));
 
         if command_res.is_err() {
@@ -247,19 +245,49 @@ pub fn tokio_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
 async fn run_to_completion_or_panic<F, E>(tasks: &mut TaskManager, fut: F) -> Result<(), E>
 where
     F: Future<Output = Result<(), E>>,
-    E: Send + Sync + From<reth_tasks::PanickedTaskError> + 'static,
+    E: Send + Sync + From<std::io::Error> + From<reth_tasks::PanickedTaskError> + 'static,
 {
-    {
-        let fut = pin!(fut);
+    let mut shutdown_signaled = false;
+
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+
+    #[cfg(unix)]
+    let mut sigterm_stream =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    #[cfg(unix)]
+    let sigterm = sigterm_stream.recv();
+    #[cfg(not(unix))]
+    let mut sigterm = std::future::pending::<Option<()>>();
+    tokio::pin!(sigterm);
+
+    let fut = fut;
+    tokio::pin!(fut);
+
+    loop {
         tokio::select! {
-            task_manager_result = tasks => {
+            task_manager_result = &mut *tasks => {
                 if let Err(panicked_error) = task_manager_result {
                     return Err(panicked_error.into());
                 }
             },
-            res = fut => res?,
+            _ = &mut ctrl_c, if !shutdown_signaled => {
+                trace!(target: "reth::cli", "Received ctrl-c");
+                tasks.trigger_shutdown_signal();
+                shutdown_signaled = true;
+            },
+            _ = &mut sigterm, if !shutdown_signaled => {
+                trace!(target: "reth::cli", "Received SIGTERM");
+                tasks.trigger_shutdown_signal();
+                shutdown_signaled = true;
+            },
+            res = &mut fut => {
+                res?;
+                break;
+            },
         }
     }
+
     Ok(())
 }
 

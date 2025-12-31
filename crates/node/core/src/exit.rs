@@ -46,11 +46,7 @@ impl Future for NodeExitFuture {
             match ready!(rx.poll_unpin(cx)) {
                 Ok(_) => {
                     this.consensus_engine_fut.take();
-                    if this.terminate {
-                        Poll::Ready(Ok(()))
-                    } else {
-                        Poll::Pending
-                    }
+                    Poll::Ready(Ok(()))
                 }
                 Err(err) => Poll::Ready(Err(err)),
             }
@@ -81,10 +77,7 @@ mod tests {
         let fut = async { Ok(()) };
 
         let mut node_exit_future = NodeExitFuture::new(fut, false);
-        poll_fn(|cx| {
-            assert!(node_exit_future.poll_unpin(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
+        let res = node_exit_future.await;
+        assert!(res.is_ok());
     }
 }

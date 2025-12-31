@@ -239,6 +239,13 @@ impl TaskManager {
         self.do_graceful_shutdown(Some(timeout))
     }
 
+    /// Fires the shutdown signal (if it has not been fired already).
+    pub fn trigger_shutdown_signal(&mut self) {
+        if let Some(signal) = self.signal.take() {
+            signal.fire();
+        }
+    }
+
     fn do_graceful_shutdown(self, timeout: Option<std::time::Duration>) -> bool {
         drop(self.signal);
         let when = timeout.map(|t| std::time::Instant::now() + t);

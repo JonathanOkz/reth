@@ -39,11 +39,15 @@ struct SnapshotInputsFingerprint {
     static_files_total_len: u64,
     static_files_max_modified: Option<SystemTime>,
     static_files_file_count: u64,
+    extra_total_len: u64,
+    extra_max_modified: Option<SystemTime>,
+    extra_file_count: u64,
 }
 
 fn snapshot_inputs_fingerprint(
     db_path: &Path,
     static_files_path: &Path,
+    chain_dir: &Path,
 ) -> io::Result<SnapshotInputsFingerprint> {
     fn safe_modified(meta: &std::fs::Metadata) -> Option<SystemTime> {
         meta.modified().ok()
@@ -102,12 +106,36 @@ fn snapshot_inputs_fingerprint(
     let (static_files_total_len, static_files_max_modified, static_files_file_count) =
         walk_dir_stats(static_files_path)?;
 
+    let mut extra_total_len = 0u64;
+    let mut extra_max_modified: Option<SystemTime> = None;
+    let mut extra_file_count = 0u64;
+
+    for dir_name in [
+        "blobstore",
+        "invalid_block_hooks",
+        "rocksdb",
+        "txpool_transactions",
+        "exex_wal",
+    ] {
+        let (len, modified, file_count) = walk_dir_stats(&chain_dir.join(dir_name))?;
+        extra_total_len = extra_total_len.saturating_add(len);
+        extra_file_count = extra_file_count.saturating_add(file_count);
+        if let Some(m) = modified {
+            if extra_max_modified.is_none_or(|cur| m > cur) {
+                extra_max_modified = Some(m);
+            }
+        }
+    }
+
     Ok(SnapshotInputsFingerprint {
         mdbx_len,
         mdbx_modified,
         static_files_total_len,
         static_files_max_modified,
         static_files_file_count,
+        extra_total_len,
+        extra_max_modified,
+        extra_file_count,
     })
 }
 
@@ -133,12 +161,18 @@ async fn maybe_run_snapshot_backup(
     let mut last_fp: Option<SnapshotInputsFingerprint> = None;
     let mut stable_iters = 0usize;
 
+    let chain_dir_for_fp = db_path.parent().map(|p| p.to_path_buf());
+
     if settle_max > Duration::ZERO && snapshot.settle_stable_iters > 0 {
         while settle_started.elapsed() < settle_max {
             let db_path_for_fp = db_path.clone();
             let static_files_path_for_fp = static_files_path.clone();
+            let chain_dir_for_fp = chain_dir_for_fp.clone();
             let fp_res = tokio::task::spawn_blocking(move || {
-                snapshot_inputs_fingerprint(&db_path_for_fp, &static_files_path_for_fp)
+                let Some(chain_dir_for_fp) = chain_dir_for_fp else {
+                    return Err(io::Error::other("db path has no parent; cannot locate chain dir"))
+                };
+                snapshot_inputs_fingerprint(&db_path_for_fp, &static_files_path_for_fp, &chain_dir_for_fp)
             })
             .await;
 

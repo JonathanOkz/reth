@@ -116,7 +116,7 @@ async fn maybe_run_snapshot_backup(
     db_path: PathBuf,
     static_files_path: PathBuf,
     snapshot_path_zst: PathBuf,
-    snapshots_zst_base_dir: Option<PathBuf>,
+    snapshot: SnapshotArgs,
 ) {
     if snapshot_backup_has_run.swap(true, Ordering::SeqCst) {
         tracing::info!(target: "reth::cli", "snapshot backup already executed, skipping");
@@ -126,26 +126,13 @@ async fn maybe_run_snapshot_backup(
     tracing::info!(target: "reth::cli", path = ?snapshot_path_zst, "starting snapshot backup");
 
     let settle_started = Instant::now();
-    let settle_max_ms: u64 = std::env::var("RETH_SNAPSHOT_SETTLE_MAX_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    let settle_interval_ms: u64 = std::env::var("RETH_SNAPSHOT_SETTLE_INTERVAL_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(200);
-    let settle_required_stable_iters: usize = std::env::var("RETH_SNAPSHOT_SETTLE_STABLE_ITERS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(2);
-
-    let settle_max = Duration::from_millis(settle_max_ms);
-    let settle_interval = Duration::from_millis(settle_interval_ms);
+    let settle_max = Duration::from_millis(snapshot.settle_max_ms);
+    let settle_interval = Duration::from_millis(snapshot.settle_interval_ms);
 
     let mut last_fp: Option<SnapshotInputsFingerprint> = None;
     let mut stable_iters = 0usize;
 
-    if settle_max > Duration::ZERO && settle_required_stable_iters > 0 {
+    if settle_max > Duration::ZERO && snapshot.settle_stable_iters > 0 {
         while settle_started.elapsed() < settle_max {
             let db_path_for_fp = db_path.clone();
             let static_files_path_for_fp = static_files_path.clone();
@@ -168,7 +155,7 @@ async fn maybe_run_snapshot_backup(
 
             if last_fp == Some(fp) {
                 stable_iters += 1;
-                if stable_iters >= settle_required_stable_iters {
+                if stable_iters >= snapshot.settle_stable_iters {
                     break;
                 }
             } else {
@@ -187,7 +174,8 @@ async fn maybe_run_snapshot_backup(
         .unwrap_or(0);
 
     let default_stage_dir = db_path.join("snapshots-zst");
-    let mut stage_dir = snapshots_zst_base_dir
+    let mut stage_dir = snapshot
+        .snapshots_zst_dir
         .as_ref()
         .cloned()
         .unwrap_or_else(|| default_stage_dir.clone());
@@ -279,10 +267,7 @@ async fn maybe_run_snapshot_backup(
     let staged_zst_tmp_for_compress = staged_zst_tmp.clone();
     let static_files_path_for_compress = static_files_path.clone();
 
-    let zstd_level: i32 = std::env::var("RETH_SNAPSHOT_ZSTD_LEVEL")
-        .ok()
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(1);
+    let zstd_level = snapshot.zstd_level;
 
     let chain_dir_for_compress = match db_path.parent() {
         Some(parent) => parent.to_path_buf(),
@@ -591,6 +576,35 @@ pub struct SnapshotArgs {
 
     #[arg(long = "snapshot.snapshots-zst", env = "RETH_SNAPSHOT_SNAPSHOTS_ZST")]
     pub snapshots_zst_dir: Option<PathBuf>,
+
+    #[arg(
+        long = "snapshot.settle-max-ms",
+        env = "RETH_SNAPSHOT_SETTLE_MAX_MS",
+        default_value_t = 0
+    )]
+    pub settle_max_ms: u64,
+
+    #[arg(
+        long = "snapshot.settle-interval-ms",
+        env = "RETH_SNAPSHOT_SETTLE_INTERVAL_MS",
+        default_value_t = 200
+    )]
+    pub settle_interval_ms: u64,
+
+    #[arg(
+        long = "snapshot.settle-stable-iters",
+        env = "RETH_SNAPSHOT_SETTLE_STABLE_ITERS",
+        default_value_t = 2
+    )]
+    pub settle_stable_iters: usize,
+
+    #[arg(
+        long = "snapshot.zstd-level",
+        env = "RETH_SNAPSHOT_ZSTD_LEVEL",
+        default_value_t = 1,
+        value_parser = clap::value_parser!(i32).range(1..=22)
+    )]
+    pub zstd_level: i32,
 }
 
 impl<C: ChainSpecParser> NodeCommand<C> {
@@ -677,12 +691,6 @@ where
                 path.push(node_config.chain.chain_id().to_string());
                 path
             })
-        } else {
-            None
-        };
-
-        let snapshots_zst_base_dir = if snapshot.snapshot_enabled {
-            snapshot.snapshots_zst_dir.as_ref().cloned()
         } else {
             None
         };
@@ -983,7 +991,7 @@ where
                     db_path,
                     static_files_path,
                     snapshot_path_zst,
-                    snapshots_zst_base_dir,
+                    snapshot,
                 )
                 .await;
             } else {

@@ -341,7 +341,8 @@ impl EngineNodeLauncher {
                         drop(shutdown_guard.take());
                         break
                     }
-                    payload = built_payloads.select_next_some() => {
+                    payload = built_payloads.next() => {
+                        let Some(payload) = payload else { break };
                         if let Some(executed_block) = payload.executed_block() {
                             debug!(target: "reth::cli", block=?executed_block.recovered_block.num_hash(),  "inserting built payload");
                             engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block.into_executed_payload()).into());

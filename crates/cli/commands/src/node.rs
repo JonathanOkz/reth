@@ -213,19 +213,24 @@ async fn maybe_run_snapshot_backup(
     }
 
     let mdbx_path_for_compress = if snapshot.secure_copy {
-        let default_stage_dir = db_path.join("snapshots-staging");
-        let mut stage_dir = snapshot
-            .snapshots_staging
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| default_stage_dir.clone());
-        if let Err(err) = tokio::fs::create_dir_all(&stage_dir).await {
-            tracing::warn!(target: "reth::cli", err = %err, path = ?stage_dir, "failed to create snapshots-staging dir");
-            stage_dir = default_stage_dir;
-            if let Err(err) = tokio::fs::create_dir_all(&stage_dir).await {
-                tracing::error!(target: "reth::cli", err = %err, path = ?stage_dir, "failed to create fallback snapshots-staging dir");
+        let stage_dir = match snapshot.snapshots_staging.as_ref().cloned() {
+            Some(dir) => dir,
+            None => {
+                tracing::error!(
+                    target: "reth::cli",
+                    "snapshot.secure-copy is enabled but snapshot.staging is not set"
+                );
                 return;
             }
+        };
+        if let Err(err) = tokio::fs::create_dir_all(&stage_dir).await {
+            tracing::error!(
+                target: "reth::cli",
+                err = %err,
+                path = ?stage_dir,
+                "failed to create snapshots-staging dir"
+            );
+            return;
         }
 
         let mut flags = CopyFlags::DONT_FLUSH | CopyFlags::COMPACT | CopyFlags::FORCE_DYNAMIC_SIZE;
@@ -580,6 +585,17 @@ where
             ext,
             snapshot,
         } = self;
+
+        if snapshot.secure_copy && snapshot.snapshots_staging.is_none() {
+            return Err(eyre::eyre!(
+                "--snapshot.secure-copy requires --snapshot.staging (or RETH_SNAPSHOT_STAGING)"
+            ));
+        }
+        if !snapshot.secure_copy && snapshot.snapshots_staging.is_some() {
+            return Err(eyre::eyre!(
+                "--snapshot.staging (or RETH_SNAPSHOT_STAGING) is only allowed with --snapshot.secure-copy"
+            ));
+        }
 
         // set up node config
         let mut node_config = NodeConfig {

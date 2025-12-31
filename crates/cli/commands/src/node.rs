@@ -29,6 +29,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tar::{Archive as TarArchive, Builder as TarBuilder};
+use tokio::sync::oneshot;
 use zstd::stream::{read::Decoder as ZstdDecoder, write::Encoder as ZstdEncoder};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -975,6 +976,43 @@ where
         let database_for_snapshot = database.clone();
         let snapshot_backup_has_run = Arc::new(AtomicBool::new(false));
 
+        let (node_stopped_tx, node_stopped_rx) = oneshot::channel::<()>();
+
+        if snapshot.snapshot_enabled {
+            if let Some(snapshot_path_zst) = snapshot_path_zst.clone() {
+                let task_executor = ctx.task_executor.clone();
+                let task_executor_task = task_executor.clone();
+                let snapshot_backup_has_run_task = snapshot_backup_has_run.clone();
+                let database_for_snapshot_task = database_for_snapshot.clone();
+                let db_path_task = db_path.clone();
+                let static_files_path_task = static_files_path.clone();
+                let snapshot_task_args = snapshot.clone();
+
+                let node_stopped_rx_task = node_stopped_rx;
+                task_executor.spawn_with_graceful_shutdown_signal(move |shutdown| async move {
+                    let guard = shutdown.await;
+
+                    let _ = node_stopped_rx_task.await;
+
+                    while task_executor_task.graceful_tasks_count() > 1 {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+
+                    maybe_run_snapshot_backup(
+                        snapshot_backup_has_run_task,
+                        database_for_snapshot_task,
+                        db_path_task,
+                        static_files_path_task,
+                        snapshot_path_zst,
+                        snapshot_task_args,
+                    )
+                    .await;
+
+                    drop(guard)
+                });
+            }
+        }
+
         // Note: snapshot backup is executed after the node stops (see below), to ensure all
         // in-memory canonical blocks have been persisted before snapshotting.
         let builder = NodeBuilder::new(node_config)
@@ -983,21 +1021,7 @@ where
 
         let run_res = launcher.entrypoint(builder, ext).await;
 
-        if snapshot.snapshot_enabled {
-            if let Some(snapshot_path_zst) = snapshot_path_zst {
-                maybe_run_snapshot_backup(
-                    snapshot_backup_has_run,
-                    database_for_snapshot,
-                    db_path,
-                    static_files_path,
-                    snapshot_path_zst,
-                    snapshot,
-                )
-                .await;
-            } else {
-                tracing::warn!(target: "reth::cli", "snapshot enabled but no snapshots dir configured; skipping snapshot backup");
-            }
-        }
+        let _ = node_stopped_tx.send(());
 
         run_res
     }

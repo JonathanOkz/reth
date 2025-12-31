@@ -368,6 +368,10 @@ impl TaskExecutor {
     pub const fn on_shutdown_signal(&self) -> &Shutdown {
         &self.on_shutdown
     }
+    #[allow(missing_docs)]
+    pub fn graceful_tasks_count(&self) -> usize {
+        self.graceful_tasks.load(Ordering::SeqCst)
+    }
 
     /// Spawns a future on the tokio runtime depending on the [`TaskKind`]
     fn spawn_on_rt<F>(&self, fut: F, task_kind: TaskKind) -> JoinHandle<()>

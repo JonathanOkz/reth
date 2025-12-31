@@ -440,9 +440,13 @@ async fn maybe_run_snapshot_backup(
         let dest_len = std::fs::metadata(&snapshot_path_for_upload).map(|m| m.len()).unwrap_or(0);
 
         if dest_len > 0 && src_len < dest_len / 2 {
-            return Err(io::Error::other(format!(
-                "refusing to overwrite larger existing snapshot ({dest_len} bytes) with smaller one ({src_len} bytes)"
-            )))
+            tracing::warn!(
+                target: "reth::cli",
+                dest = ?snapshot_path_for_upload,
+                existing_bytes = dest_len,
+                new_bytes = src_len,
+                "new snapshot is much smaller than existing one; overwriting anyway"
+            );
         }
 
         let dest_tmp = dest_parent.join(format!("mdbx.dat.zst.tmp-{pid}-{unique}"));

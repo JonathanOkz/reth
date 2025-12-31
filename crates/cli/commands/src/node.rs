@@ -247,7 +247,6 @@ async fn maybe_run_snapshot_backup(
     let db_for_snapshot = database_for_snapshot.clone();
     let flags_for_snapshot = flags;
     let staged_snapshot_dir_tmp_for_snapshot = staged_snapshot_dir_tmp.clone();
-    let staged_snapshot_dat_for_snapshot = staged_snapshot_dat.clone();
     let snapshot_res = tokio::task::spawn_blocking(move || {
         if staged_snapshot_dir_tmp_for_snapshot.exists() {
             if let Some(parent) = staged_snapshot_dir_tmp_for_snapshot.parent() {
@@ -262,7 +261,7 @@ async fn maybe_run_snapshot_backup(
 
         std::fs::create_dir_all(&staged_snapshot_dir_tmp_for_snapshot).map_err(|e| e.to_string())?;
         db_for_snapshot
-            .snapshot_to_path(&staged_snapshot_dat_for_snapshot, flags_for_snapshot)
+            .snapshot_to_path(&staged_snapshot_dir_tmp_for_snapshot, flags_for_snapshot)
             .map_err(|e| e.to_string())
     })
     .await;
@@ -271,6 +270,7 @@ async fn maybe_run_snapshot_backup(
         Ok(Ok(())) => {
             tracing::info!(
                 target: "reth::cli",
+                snapshot_dir = ?staged_snapshot_dir_tmp,
                 path = ?staged_snapshot_dat,
                 elapsed_ms = snapshot_started.elapsed().as_millis(),
                 "mdbx snapshot created"

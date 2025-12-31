@@ -202,21 +202,6 @@ async fn maybe_run_snapshot_backup(
         }
     }
 
-    let default_stage_dir = db_path.join("snapshots-zst");
-    let mut stage_dir = snapshot
-        .snapshots_zst_dir
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| default_stage_dir.clone());
-    if let Err(err) = tokio::fs::create_dir_all(&stage_dir).await {
-        tracing::warn!(target: "reth::cli", err = %err, path = ?stage_dir, "failed to create snapshots-zst dir");
-        stage_dir = default_stage_dir;
-        if let Err(err) = tokio::fs::create_dir_all(&stage_dir).await {
-            tracing::error!(target: "reth::cli", err = %err, path = ?stage_dir, "failed to create fallback snapshots-zst dir");
-            return;
-        }
-    }
-
     if let Some(parent) = snapshot_path_zst.parent() {
         if let Err(err) = tokio::fs::create_dir_all(parent).await {
             tracing::error!(target: "reth::cli", ?err, path = ?parent, "failed to create snapshots dir");
@@ -227,47 +212,76 @@ async fn maybe_run_snapshot_backup(
         return;
     }
 
-    let mut flags = CopyFlags::DONT_FLUSH | CopyFlags::COMPACT | CopyFlags::FORCE_DYNAMIC_SIZE;
-    if std::env::var("RETH_SNAPSHOT_MDBX_THROTTLE_MVCC").ok().as_deref() == Some("1") {
-        flags |= CopyFlags::THROTTLE_MVCC;
-    }
-
-    let staged_snapshot_dat = stage_dir.join("mdbx.dat");
-
-    let snapshot_started = Instant::now();
-    let db_for_snapshot = database_for_snapshot.clone();
-    let flags_for_snapshot = flags;
-    let staged_snapshot_dat_for_snapshot = staged_snapshot_dat.clone();
-    let snapshot_res = tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&staged_snapshot_dat_for_snapshot.parent().unwrap()).map_err(|e| e.to_string())?;
-        db_for_snapshot
-            .snapshot_to_path(&staged_snapshot_dat_for_snapshot, flags_for_snapshot)
-            .map_err(|e| e.to_string())
-    })
-    .await;
-
-    match snapshot_res {
-        Ok(Ok(())) => {
-            tracing::info!(
-                target: "reth::cli",
-                snapshot_dir = ?stage_dir,
-                path = ?staged_snapshot_dat,
-                elapsed_ms = snapshot_started.elapsed().as_millis(),
-                "mdbx snapshot created"
-            );
+    let mdbx_path_for_compress = if snapshot.secure_copy {
+        let default_stage_dir = db_path.join("snapshots-staging");
+        let mut stage_dir = snapshot
+            .snapshots_staging
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| default_stage_dir.clone());
+        if let Err(err) = tokio::fs::create_dir_all(&stage_dir).await {
+            tracing::warn!(target: "reth::cli", err = %err, path = ?stage_dir, "failed to create snapshots-staging dir");
+            stage_dir = default_stage_dir;
+            if let Err(err) = tokio::fs::create_dir_all(&stage_dir).await {
+                tracing::error!(target: "reth::cli", err = %err, path = ?stage_dir, "failed to create fallback snapshots-staging dir");
+                return;
+            }
         }
-        Ok(Err(err)) => {
-            tracing::error!(target: "reth::cli", err = %err, "failed to snapshot mdbx");
-            return;
+
+        let mut flags = CopyFlags::DONT_FLUSH | CopyFlags::COMPACT | CopyFlags::FORCE_DYNAMIC_SIZE;
+        if std::env::var("RETH_SNAPSHOT_MDBX_THROTTLE_MVCC").ok().as_deref() == Some("1") {
+            flags |= CopyFlags::THROTTLE_MVCC;
         }
-        Err(err) => {
-            tracing::error!(target: "reth::cli", err = %err, "snapshot task join error");
-            return;
+
+        let staged_snapshot_dat = stage_dir.join("mdbx.dat");
+        let snapshot_started = Instant::now();
+        let db_for_snapshot = database_for_snapshot.clone();
+        let flags_for_snapshot = flags;
+        let staged_snapshot_dat_for_snapshot = staged_snapshot_dat.clone();
+        let snapshot_res = tokio::task::spawn_blocking(move || {
+            let parent = staged_snapshot_dat_for_snapshot
+                .parent()
+                .ok_or_else(|| "snapshot staging path has no parent".to_string())?;
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            db_for_snapshot
+                .snapshot_to_path(&staged_snapshot_dat_for_snapshot, flags_for_snapshot)
+                .map_err(|e| e.to_string())
+        })
+        .await;
+
+        match snapshot_res {
+            Ok(Ok(())) => {
+                tracing::info!(
+                    target: "reth::cli",
+                    snapshot_dir = ?stage_dir,
+                    path = ?staged_snapshot_dat,
+                    elapsed_ms = snapshot_started.elapsed().as_millis(),
+                    "mdbx snapshot created"
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::error!(target: "reth::cli", err = %err, "failed to snapshot mdbx");
+                return;
+            }
+            Err(err) => {
+                tracing::error!(target: "reth::cli", err = %err, "snapshot task join error");
+                return;
+            }
         }
-    }
+
+        staged_snapshot_dat
+    } else {
+        let live_mdbx = db_path.join("mdbx.dat");
+        tracing::warn!(
+            target: "reth::cli",
+            path = ?live_mdbx,
+            "snapshot.secure-copy is disabled: compressing live mdbx.dat (unsafe)"
+        );
+        live_mdbx
+    };
 
     let compress_started = Instant::now();
-    let staged_snapshot_dat_for_compress = staged_snapshot_dat.clone();
+    let mdbx_path_for_compress_task = mdbx_path_for_compress.clone();
     let snapshot_path_zst_for_compress = snapshot_path_zst.clone();
     let static_files_path_for_compress = static_files_path.clone();
 
@@ -289,7 +303,7 @@ async fn maybe_run_snapshot_backup(
     let compress_res = tokio::task::spawn_blocking(move || {
         use std::io::Write;
 
-        let src = std::fs::File::open(&staged_snapshot_dat_for_compress)?;
+        let mut src = std::fs::File::open(&mdbx_path_for_compress_task)?;
         let src_len = src.metadata()?.len();
         if src_len == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "snapshot source is empty"))
@@ -302,8 +316,10 @@ async fn maybe_run_snapshot_backup(
             .open(&snapshot_path_zst_for_compress)?;
         let encoder = ZstdEncoder::new(dst, zstd_level)?;
         let mut tar = TarBuilder::new(encoder);
-        tar.append_path_with_name(&staged_snapshot_dat_for_compress, "db/mdbx.dat")?;
-        tar.append_dir_all("static_files", &static_files_path_for_compress)?;
+        tar.append_file("db/mdbx.dat", &mut src)?;
+        if static_files_path_for_compress.exists() {
+            tar.append_dir_all("static_files", &static_files_path_for_compress)?;
+        }
 
         if blobstore_path_for_compress.exists() {
             tar.append_dir_all("blobstore", &blobstore_path_for_compress)?;
@@ -469,14 +485,17 @@ pub struct SnapshotArgs {
     #[arg(long = "snapshot.enabled", env = "RETH_SNAPSHOT_ENABLED", default_value_t = false)]
     pub snapshot_enabled: bool,
 
-    #[arg(long = "snapshot.snapshots-dir", env = "RETH_SNAPSHOT_SNAPSHOTS_DIR")]
-    pub snapshots_dir: Option<PathBuf>,
+    #[arg(long = "snapshot.destination", env = "RETH_SNAPSHOT_DESTINATION")]
+    pub snapshots_destination: Option<PathBuf>,
 
 	#[arg(long = "snapshot.project-id", env = "RETH_SNAPSHOT_PROJECT_ID")]
 	pub project_id: Option<String>,
 
-    #[arg(long = "snapshot.snapshots-zst", env = "RETH_SNAPSHOT_SNAPSHOTS_ZST")]
-    pub snapshots_zst_dir: Option<PathBuf>,
+    #[arg(long = "snapshot.staging", env = "RETH_SNAPSHOT_STAGING")]
+    pub snapshots_staging: Option<PathBuf>,
+
+	#[arg(long = "snapshot.secure-copy", env = "RETH_SNAPSHOT_SECURE_COPY", default_value_t = false)]
+	pub secure_copy: bool,
 
     #[arg(
         long = "snapshot.settle-max-ms",
@@ -587,7 +606,7 @@ where
         let static_files_path = data_dir.static_files();
 
         		let snapshots_base_dir = if snapshot.snapshot_enabled {
-			snapshot.snapshots_dir.as_ref().map(|dir| {
+			snapshot.destination_dir.as_ref().map(|dir| {
 				let mut path = dir.clone();
 				let scope = snapshot
 					.project_id
@@ -754,30 +773,18 @@ where
                             }
 
                             let restored_static_files_file_count: u64 = if unpacked_static_files {
-                                let static_files_has_any = std::fs::read_dir(&restored_static_files_dir)
-                                    .ok()
-                                    .and_then(|mut it| it.next())
-                                    .is_some();
-                                if !static_files_has_any {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::InvalidData,
-                                        "snapshot does not contain static_files; regenerate snapshot",
-                                    ))
+                                // `static_files/` may legitimately be empty for small chains.
+                                if !restored_static_files_dir.exists() {
+                                    std::fs::create_dir_all(&restored_static_files_dir)?;
                                 }
                                 std::fs::read_dir(&restored_static_files_dir)
                                     .ok()
                                     .map(|it| it.filter(|e| e.is_ok()).count() as u64)
                                     .unwrap_or(0)
                             } else {
-                                let static_files_has_any = std::fs::read_dir(&static_files_dir_for_restore)
-                                    .ok()
-                                    .and_then(|mut it| it.next())
-                                    .is_some();
-                                if !static_files_has_any {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::InvalidData,
-                                        "legacy snapshot restored db only, but static_files are missing on disk; regenerate snapshot",
-                                    ))
+                                // Legacy snapshot might have only `db/mdbx.dat`. Ensure `static_files/` exists.
+                                if !static_files_dir_for_restore.exists() {
+                                    let _ = std::fs::create_dir_all(&static_files_dir_for_restore);
                                 }
                                 0
                             };

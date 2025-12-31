@@ -606,7 +606,7 @@ where
         let static_files_path = data_dir.static_files();
 
         		let snapshots_base_dir = if snapshot.snapshot_enabled {
-			snapshot.destination_dir.as_ref().map(|dir| {
+			snapshot.snapshots_destination.as_ref().map(|dir| {
 				let mut path = dir.clone();
 				let scope = snapshot
 					.project_id

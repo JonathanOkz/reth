@@ -212,6 +212,9 @@ async fn maybe_run_snapshot_backup(
         return;
     }
 
+    let snapshot_ok_path = snapshot_path_zst.with_extension("zst.ok");
+    let _ = tokio::fs::remove_file(&snapshot_ok_path).await;
+
     let mdbx_path_for_compress = if snapshot.secure_copy {
         let stage_dir = match snapshot.snapshots_staging.as_ref().cloned() {
             Some(dir) => dir,
@@ -288,6 +291,7 @@ async fn maybe_run_snapshot_backup(
     let compress_started = Instant::now();
     let mdbx_path_for_compress_task = mdbx_path_for_compress.clone();
     let snapshot_path_zst_for_compress = snapshot_path_zst.clone();
+    let snapshot_ok_path_for_compress = snapshot_ok_path.clone();
     let static_files_path_for_compress = static_files_path.clone();
 
     let zstd_level = snapshot.zstd_level;
@@ -308,17 +312,21 @@ async fn maybe_run_snapshot_backup(
     let compress_res = tokio::task::spawn_blocking(move || {
         use std::io::Write;
 
-        let mut src = std::fs::File::open(&mdbx_path_for_compress_task)?;
-        let src_len = src.metadata()?.len();
+        let src_file = std::fs::File::open(&mdbx_path_for_compress_task)?;
+        let src_len = src_file.metadata()?.len();
         if src_len == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "snapshot source is empty"))
         }
+
+        let mut src = std::io::BufReader::with_capacity(8 * 1024 * 1024, src_file);
 
         let dst = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .open(&snapshot_path_zst_for_compress)?;
+
+        let dst = std::io::BufWriter::with_capacity(8 * 1024 * 1024, dst);
         let encoder = ZstdEncoder::new(dst, zstd_level)?;
         let mut tar = TarBuilder::new(encoder);
         tar.append_file("db/mdbx.dat", &mut src)?;
@@ -347,13 +355,25 @@ async fn maybe_run_snapshot_backup(
         let encoder = tar.into_inner()?;
         let mut dst = encoder.finish()?;
         dst.flush()?;
-        let written = dst.metadata().map(|m| m.len()).unwrap_or(0);
+        let written = std::fs::metadata(&snapshot_path_zst_for_compress)
+            .map(|m| m.len())
+            .unwrap_or(0);
         if written == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "compressed snapshot is empty",
             ))
         }
+
+        drop(dst);
+
+        let mut ok = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&snapshot_ok_path_for_compress)?;
+        ok.write_all(b"ok\n")?;
+        ok.flush()?;
         Ok::<_, io::Error>(())
     })
     .await;
@@ -527,7 +547,7 @@ pub struct SnapshotArgs {
         long = "snapshot.zstd-level",
         env = "RETH_SNAPSHOT_ZSTD_LEVEL",
         default_value_t = 1,
-        value_parser = clap::value_parser!(i32).range(1..=22)
+        value_parser = clap::value_parser!(i32).range(-7..=22)
     )]
     pub zstd_level: i32,
 }
@@ -648,6 +668,11 @@ where
                     "snapshot enabled: restore expects mdbx.dat.zst (tar.zst: db/ + static_files/ + optional: blobstore/, invalid_block_hooks/, rocksdb/, txpool_transactions/, exex_wal/); backup runs on shutdown"
                 );
 
+                let require_ok = std::env::var("RETH_SNAPSHOT_REQUIRE_OK")
+                    .ok()
+                    .as_deref()
+                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
                 let force_restore = std::env::var("RETH_SNAPSHOT_FORCE_RESTORE")
                     .ok()
                     .as_deref()
@@ -688,6 +713,37 @@ where
                             "no snapshot found, skipping restore"
                         );
                     } else {
+                        let snapshot_ok_path = snapshot_path_zst.with_extension("zst.ok");
+                        let ok_exists = tokio::fs::metadata(&snapshot_ok_path).await.is_ok();
+                        if require_ok && !ok_exists {
+                            tracing::error!(
+                                target: "reth::cli",
+                                path = ?snapshot_ok_path,
+                                "snapshot ok marker missing, skipping restore"
+                            );
+                        }
+                        if !require_ok && !ok_exists {
+                            tracing::warn!(
+                                target: "reth::cli",
+                                path = ?snapshot_ok_path,
+                                "snapshot ok marker missing; attempting restore anyway"
+                            );
+                        }
+
+                        let should_restore = ok_exists || !require_ok;
+                        let remove_after_restore = std::env::var("RETH_SNAPSHOT_REMOVE_AFTER_RESTORE")
+                            .ok()
+                            .as_deref()
+                            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+                        if !should_restore {
+                            tracing::warn!(
+                                target: "reth::cli",
+                                path = ?snapshot_path_zst,
+                                "snapshot restore skipped"
+                            );
+                        } else {
+
                         let restore_started = Instant::now();
                         let snapshot_src = snapshot_path_zst.clone();
                         let snapshot_src_for_logs = snapshot_src.clone();
@@ -739,6 +795,8 @@ where
                                     ))
                                 }
 
+                                let src_file =
+                                    std::io::BufReader::with_capacity(8 * 1024 * 1024, src_file);
                                 let mut decoder = ZstdDecoder::new(src_file)?;
                                 let mut header = [0u8; 512];
                                 let n = std::io::Read::read(&mut decoder, &mut header)?;
@@ -753,6 +811,8 @@ where
 
                             let unpacked_static_files = if is_tar {
                                 let src_file = std::fs::File::open(&snapshot_src)?;
+                                let src_file =
+                                    std::io::BufReader::with_capacity(8 * 1024 * 1024, src_file);
                                 let decoder = ZstdDecoder::new(src_file)?;
                                 let mut archive = TarArchive::new(decoder);
                                 archive.unpack(&restore_tmp_dir)?;
@@ -763,6 +823,8 @@ where
                                 std::fs::create_dir_all(&restored_db_dir)?;
 
                                 let src_file = std::fs::File::open(&snapshot_src)?;
+                                let src_file =
+                                    std::io::BufReader::with_capacity(8 * 1024 * 1024, src_file);
                                 let decoder = ZstdDecoder::new(src_file)?;
                                 let dst = std::fs::OpenOptions::new()
                                     .create(true)
@@ -858,26 +920,38 @@ where
                                     "snapshot restored"
                                 );
                                 let _ = tokio::fs::remove_file(db_path.join("mdbx.lck")).await;
-                                match tokio::fs::remove_file(&snapshot_src_for_logs).await {
-                                    Ok(()) => {
-                                        tracing::info!(
-                                            target: "reth::cli",
-                                            path = ?snapshot_src_for_logs,
-                                            "snapshot removed after successful restore"
-                                        );
+                                if remove_after_restore {
+                                    match tokio::fs::remove_file(&snapshot_src_for_logs).await {
+                                        Ok(()) => {
+                                            tracing::info!(
+                                                target: "reth::cli",
+                                                path = ?snapshot_src_for_logs,
+                                                "snapshot removed after successful restore"
+                                            );
+                                            let _ = tokio::fs::remove_file(
+                                                snapshot_src_for_logs.with_extension("zst.ok"),
+                                            )
+                                            .await;
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                target: "reth::cli",
+                                                err = %err,
+                                                path = ?snapshot_src_for_logs,
+                                                "failed to remove snapshot after successful restore"
+                                            );
+                                        }
                                     }
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            target: "reth::cli",
-                                            err = %err,
-                                            path = ?snapshot_src_for_logs,
-                                            "failed to remove snapshot after successful restore"
-                                        );
-                                    }
+                                } else {
+                                    tracing::info!(
+                                        target: "reth::cli",
+                                        path = ?snapshot_src_for_logs,
+                                        "snapshot kept after successful restore"
+                                    );
                                 }
                             }
                             Ok(Err(err)) if err.kind() == io::ErrorKind::NotFound => {
-                                tracing::error!(target: "reth::cli", err = %err, path = ?snapshot_src_for_logs, "no snapshot found, skipping restore");
+                                tracing::error!(target: "reth::cli", err = %err, path = ?snapshot_path_zst, "no snapshot found, skipping restore");
                             }
                             Ok(Err(err)) => {
                                 tracing::error!(target: "reth::cli", err = %err, src = ?snapshot_src_for_logs, dest = ?db_path, "snapshot restore failed, continuing without restore");
@@ -889,7 +963,7 @@ where
                     }
                 }
             } else {
-                tracing::error!(target: "reth::cli", "snapshot enabled but no snapshots dir configured; skipping snapshot restore");
+                tracing::error!(target: "reth::cli", "snapshot enabled but no snapshot destination configured; skipping snapshot restore");
             }
         }
 

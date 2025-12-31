@@ -26,7 +26,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tar::{Archive as TarArchive, Builder as TarBuilder};
 use zstd::stream::{read::Decoder as ZstdDecoder, write::Encoder as ZstdEncoder};
@@ -73,7 +73,7 @@ fn snapshot_inputs_fingerprint(
                 total_len = total_len.saturating_add(len);
                 files = files.saturating_add(file_count);
                 if let Some(m) = modified {
-                    if max_modified.map_or(true, |cur| m > cur) {
+                    if max_modified.is_none_or(|cur| m > cur) {
                         max_modified = Some(m);
                     }
                 }
@@ -81,7 +81,7 @@ fn snapshot_inputs_fingerprint(
                 total_len = total_len.saturating_add(meta.len());
                 files = files.saturating_add(1);
                 if let Some(m) = safe_modified(&meta) {
-                    if max_modified.map_or(true, |cur| m > cur) {
+                    if max_modified.is_none_or(|cur| m > cur) {
                         max_modified = Some(m);
                     }
                 }
@@ -126,47 +126,65 @@ async fn maybe_run_snapshot_backup(
     tracing::info!(target: "reth::cli", path = ?snapshot_path_zst, "starting snapshot backup");
 
     let settle_started = Instant::now();
-    let settle_max = Duration::from_secs(30);
-    let settle_interval = Duration::from_millis(500);
-    let settle_required_stable_iters = 3usize;
+    let settle_max_ms: u64 = std::env::var("RETH_SNAPSHOT_SETTLE_MAX_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let settle_interval_ms: u64 = std::env::var("RETH_SNAPSHOT_SETTLE_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(200);
+    let settle_required_stable_iters: usize = std::env::var("RETH_SNAPSHOT_SETTLE_STABLE_ITERS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(2);
+
+    let settle_max = Duration::from_millis(settle_max_ms);
+    let settle_interval = Duration::from_millis(settle_interval_ms);
 
     let mut last_fp: Option<SnapshotInputsFingerprint> = None;
     let mut stable_iters = 0usize;
 
-    while settle_started.elapsed() < settle_max {
-        let db_path_for_fp = db_path.clone();
-        let static_files_path_for_fp = static_files_path.clone();
-        let fp_res = tokio::task::spawn_blocking(move || {
-            snapshot_inputs_fingerprint(&db_path_for_fp, &static_files_path_for_fp)
-        })
-        .await;
+    if settle_max > Duration::ZERO && settle_required_stable_iters > 0 {
+        while settle_started.elapsed() < settle_max {
+            let db_path_for_fp = db_path.clone();
+            let static_files_path_for_fp = static_files_path.clone();
+            let fp_res = tokio::task::spawn_blocking(move || {
+                snapshot_inputs_fingerprint(&db_path_for_fp, &static_files_path_for_fp)
+            })
+            .await;
 
-        let fp = match fp_res {
-            Ok(Ok(fp)) => fp,
-            Ok(Err(err)) => {
-                tracing::warn!(target: "reth::cli", err = %err, "failed to fingerprint snapshot inputs; proceeding without settle");
-                break;
-            }
-            Err(err) => {
-                tracing::warn!(target: "reth::cli", err = %err, "fingerprint task join error; proceeding without settle");
-                break;
-            }
-        };
+            let fp = match fp_res {
+                Ok(Ok(fp)) => fp,
+                Ok(Err(err)) => {
+                    tracing::warn!(target: "reth::cli", err = %err, "failed to fingerprint snapshot inputs; proceeding without settle");
+                    break;
+                }
+                Err(err) => {
+                    tracing::warn!(target: "reth::cli", err = %err, "fingerprint task join error; proceeding without settle");
+                    break;
+                }
+            };
 
-        if last_fp == Some(fp) {
-            stable_iters += 1;
-            if stable_iters >= settle_required_stable_iters {
-                break;
+            if last_fp == Some(fp) {
+                stable_iters += 1;
+                if stable_iters >= settle_required_stable_iters {
+                    break;
+                }
+            } else {
+                stable_iters = 0;
+                last_fp = Some(fp);
             }
-        } else {
-            stable_iters = 0;
-            last_fp = Some(fp);
+
+            tokio::time::sleep(settle_interval).await;
         }
-
-        tokio::time::sleep(settle_interval).await;
     }
 
     let pid = std::process::id();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
 
     let default_stage_dir = db_path.join("snapshots-zst");
     let mut stage_dir = snapshots_zst_base_dir
@@ -181,8 +199,6 @@ async fn maybe_run_snapshot_backup(
             return;
         }
     }
-
-    let _ = tokio::fs::remove_file(stage_dir.join("mdbx.dat")).await;
 
     if let Some(parent) = snapshot_path_zst.parent() {
         if let Err(err) = tokio::fs::create_dir_all(parent).await {
@@ -199,9 +215,9 @@ async fn maybe_run_snapshot_backup(
         flags |= CopyFlags::THROTTLE_MVCC;
     }
 
-    let staged_snapshot_dir_tmp = stage_dir.join(format!("mdbx.snapshot.tmp-{}", pid));
+    let staged_snapshot_dir_tmp = stage_dir.join(format!("mdbx.snapshot.tmp-{pid}"));
     let staged_snapshot_dat = staged_snapshot_dir_tmp.join("mdbx.dat");
-    let staged_zst_tmp = stage_dir.join(format!("mdbx.dat.zst.tmp-{}", pid));
+    let staged_zst_tmp = stage_dir.join(format!("mdbx.dat.zst.tmp-{pid}-{unique}"));
     let staged_zst = stage_dir.join("mdbx.dat.zst");
 
     let snapshot_started = Instant::now();
@@ -210,7 +226,17 @@ async fn maybe_run_snapshot_backup(
     let staged_snapshot_dir_tmp_for_snapshot = staged_snapshot_dir_tmp.clone();
     let staged_snapshot_dat_for_snapshot = staged_snapshot_dat.clone();
     let snapshot_res = tokio::task::spawn_blocking(move || {
-        let _ = std::fs::remove_dir_all(&staged_snapshot_dir_tmp_for_snapshot);
+        if staged_snapshot_dir_tmp_for_snapshot.exists() {
+            if let Some(parent) = staged_snapshot_dir_tmp_for_snapshot.parent() {
+                let base = staged_snapshot_dir_tmp_for_snapshot
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "mdbx.snapshot.tmp".to_string());
+                let stale = parent.join(format!("{base}.stale-{unique}"));
+                let _ = std::fs::rename(&staged_snapshot_dir_tmp_for_snapshot, &stale);
+            }
+        }
+
         std::fs::create_dir_all(&staged_snapshot_dir_tmp_for_snapshot).map_err(|e| e.to_string())?;
         db_for_snapshot
             .snapshot_to_path(&staged_snapshot_dat_for_snapshot, flags_for_snapshot)
@@ -229,12 +255,10 @@ async fn maybe_run_snapshot_backup(
         }
         Ok(Err(err)) => {
             tracing::error!(target: "reth::cli", err = %err, "failed to snapshot mdbx");
-            let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
             return;
         }
         Err(err) => {
             tracing::error!(target: "reth::cli", err = %err, "snapshot task join error");
-            let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
             return;
         }
     }
@@ -245,7 +269,6 @@ async fn maybe_run_snapshot_backup(
     };
     if src_len == 0 {
         tracing::error!(target: "reth::cli", path = ?staged_snapshot_dat, "mdbx snapshot file is empty");
-        let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
         return;
     }
 
@@ -255,10 +278,28 @@ async fn maybe_run_snapshot_backup(
     let staged_snapshot_dat_for_compress = staged_snapshot_dat.clone();
     let staged_zst_tmp_for_compress = staged_zst_tmp.clone();
     let static_files_path_for_compress = static_files_path.clone();
+
+    let zstd_level: i32 = std::env::var("RETH_SNAPSHOT_ZSTD_LEVEL")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(1);
+
+    let chain_dir_for_compress = match db_path.parent() {
+        Some(parent) => parent.to_path_buf(),
+        None => {
+            tracing::error!(target: "reth::cli", path = ?db_path, "db path has no parent; cannot locate chain dir");
+            return;
+        }
+    };
+    let blobstore_path_for_compress = chain_dir_for_compress.join("blobstore");
+    let invalid_block_hooks_path_for_compress = chain_dir_for_compress.join("invalid_block_hooks");
+    let rocksdb_path_for_compress = chain_dir_for_compress.join("rocksdb");
+    let txpool_transactions_path_for_compress = chain_dir_for_compress.join("txpool_transactions");
+    let exex_wal_path_for_compress = chain_dir_for_compress.join("exex_wal");
+
     let compress_res = tokio::task::spawn_blocking(move || {
         use std::io::Write;
 
-        let _ = std::fs::remove_file(&staged_zst_tmp_for_compress);
         let src = std::fs::File::open(&staged_snapshot_dat_for_compress)?;
         let src_len = src.metadata()?.len();
         if src_len == 0 {
@@ -270,16 +311,32 @@ async fn maybe_run_snapshot_backup(
             .truncate(true)
             .write(true)
             .open(&staged_zst_tmp_for_compress)?;
-        let encoder = ZstdEncoder::new(dst, 22)?;
+        let encoder = ZstdEncoder::new(dst, zstd_level)?;
         let mut tar = TarBuilder::new(encoder);
         tar.append_path_with_name(&staged_snapshot_dat_for_compress, "db/mdbx.dat")?;
         tar.append_dir_all("static_files", &static_files_path_for_compress)?;
+
+        if blobstore_path_for_compress.exists() {
+            tar.append_dir_all("blobstore", &blobstore_path_for_compress)?;
+        }
+        if invalid_block_hooks_path_for_compress.exists() {
+            tar.append_dir_all("invalid_block_hooks", &invalid_block_hooks_path_for_compress)?;
+        }
+        if rocksdb_path_for_compress.exists() {
+            tar.append_dir_all("rocksdb", &rocksdb_path_for_compress)?;
+        }
+        if txpool_transactions_path_for_compress.exists() {
+            tar.append_dir_all("txpool_transactions", &txpool_transactions_path_for_compress)?;
+        }
+        if exex_wal_path_for_compress.exists() {
+            tar.append_dir_all("exex_wal", &exex_wal_path_for_compress)?;
+        }
+
         tar.finish()?;
 
         let encoder = tar.into_inner()?;
         let mut dst = encoder.finish()?;
         dst.flush()?;
-        let _ = dst.sync_all();
         let written = dst.metadata().map(|m| m.len()).unwrap_or(0);
         if written == 0 {
             return Err(io::Error::new(
@@ -302,27 +359,28 @@ async fn maybe_run_snapshot_backup(
         }
         Ok(Err(err)) => {
             tracing::error!(target: "reth::cli", err = %err, "failed to compress snapshot");
-            let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
-            let _ = tokio::fs::remove_file(&staged_zst_tmp).await;
             return;
         }
         Err(err) => {
             tracing::error!(target: "reth::cli", err = %err, "snapshot compress task join error");
-            let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
-            let _ = tokio::fs::remove_file(&staged_zst_tmp).await;
             return;
         }
     }
 
-    let _ = tokio::fs::remove_file(&staged_zst).await;
+    if tokio::fs::metadata(&staged_zst).await.is_ok() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let staged_prev = stage_dir.join(format!("mdbx.dat.zst.prev-{pid}-{unique}"));
+        let _ = tokio::fs::rename(&staged_zst, &staged_prev).await;
+    }
     if let Err(err) = tokio::fs::rename(&staged_zst_tmp, &staged_zst).await {
         tracing::error!(target: "reth::cli", err = %err, src = ?staged_zst_tmp, dest = ?staged_zst, "failed to finalize compressed snapshot");
-        let _ = tokio::fs::remove_file(&staged_zst_tmp).await;
-        let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
         return;
     }
 
-    let _ = tokio::fs::remove_dir_all(&staged_snapshot_dir_tmp).await;
+    // Cleanup: the raw snapshot copy can be huge; keep only compressed artifact.
 
     let upload_started = Instant::now();
     let staged_zst_for_upload = staged_zst.clone();
@@ -344,7 +402,6 @@ async fn maybe_run_snapshot_backup(
                 written += n as u64;
             }
             dst.flush()?;
-            let _ = dst.sync_all();
             Ok(written)
         }
 
@@ -357,19 +414,17 @@ async fn maybe_run_snapshot_backup(
         let dest_parent = snapshot_path_for_upload
             .parent()
             .map(|p| p.to_path_buf())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "snapshot destination has no parent"))?;
+            .ok_or_else(|| io::Error::other("snapshot destination has no parent"))?;
 
         let dest_len = std::fs::metadata(&snapshot_path_for_upload).map(|m| m.len()).unwrap_or(0);
 
         if dest_len > 0 && src_len < dest_len / 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("refusing to overwrite larger existing snapshot ({dest_len} bytes) with smaller one ({src_len} bytes)"),
-            ))
+            return Err(io::Error::other(format!(
+                "refusing to overwrite larger existing snapshot ({dest_len} bytes) with smaller one ({src_len} bytes)"
+            )))
         }
 
-        let dest_tmp = dest_parent.join(format!("mdbx.dat.zst.tmp-{}", pid));
-        let _ = std::fs::remove_file(&dest_tmp);
+        let dest_tmp = dest_parent.join(format!("mdbx.dat.zst.tmp-{pid}-{unique}"));
 
         let dst = std::fs::OpenOptions::new()
             .create(true)
@@ -379,16 +434,12 @@ async fn maybe_run_snapshot_backup(
         let written = copy_large(src, dst)?;
 
         if written != src_len {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "short write uploading snapshot: expected {src_len} bytes, wrote {written} bytes"
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "short write uploading snapshot: expected {src_len} bytes, wrote {written} bytes"
+            )));
         }
 
-        let dest_backup = dest_parent.join(format!("mdbx.dat.zst.bak-{}", pid));
-        let _ = std::fs::remove_file(&dest_backup);
+        let dest_backup = dest_parent.join(format!("mdbx.dat.zst.bak-{pid}-{unique}"));
         let moved_old = std::fs::rename(&snapshot_path_for_upload, &dest_backup).is_ok();
 
         match std::fs::rename(&dest_tmp, &snapshot_path_for_upload) {
@@ -646,7 +697,7 @@ where
                 tracing::info!(
                     target: "reth::cli",
                     path = ?snapshot_path_zst,
-                    "snapshot enabled: restore expects mdbx.dat.zst (tar.zst: db/ + static_files/); backup runs on shutdown"
+                    "snapshot enabled: restore expects mdbx.dat.zst (tar.zst: db/ + static_files/ + optional: blobstore/, invalid_block_hooks/, rocksdb/, txpool_transactions/, exex_wal/); backup runs on shutdown"
                 );
 
                 let force_restore = std::env::var("RETH_SNAPSHOT_FORCE_RESTORE")
@@ -697,11 +748,11 @@ where
                         let restore_res = tokio::task::spawn_blocking(move || {
                             let chain_dir = db_dir_for_restore
                                 .parent()
-                                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "db dir has no parent"))?
+                                .ok_or_else(|| io::Error::other("db dir has no parent"))?
                                 .to_path_buf();
 
                             let pid = std::process::id();
-                            let restore_tmp_dir = chain_dir.join(format!("snapshot.restore.tmp-{}", pid));
+                            let restore_tmp_dir = chain_dir.join(format!("snapshot.restore.tmp-{pid}"));
                             let _ = std::fs::remove_dir_all(&restore_tmp_dir);
                             std::fs::create_dir_all(&restore_tmp_dir)?;
 
@@ -723,7 +774,6 @@ where
                                     written += n as u64;
                                 }
                                 dst.flush()?;
-                                let _ = dst.sync_all();
                                 Ok(written)
                             }
 
@@ -731,7 +781,7 @@ where
                             let restored_db_file = restored_db_dir.join("mdbx.dat");
                             let restored_static_files_dir = restore_tmp_dir.join("static_files");
 
-                            let unpacked_static_files = {
+                            let is_tar = {
                                 let src_file = std::fs::File::open(&snapshot_src)?;
                                 let src_len = src_file.metadata().map(|m| m.len())?;
                                 if src_len == 0 {
@@ -741,12 +791,25 @@ where
                                     ))
                                 }
 
-                                let decoder = ZstdDecoder::new(src_file)?;
-                                let mut archive = TarArchive::new(decoder);
-                                archive.unpack(&restore_tmp_dir).is_ok()
+                                let mut decoder = ZstdDecoder::new(src_file)?;
+                                let mut header = [0u8; 512];
+                                let n = std::io::Read::read(&mut decoder, &mut header)?;
+                                if n != 512 {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::UnexpectedEof,
+                                        "snapshot header is truncated",
+                                    ))
+                                }
+                                header.get(257..262) == Some(b"ustar")
                             };
 
-                            if !unpacked_static_files {
+                            let unpacked_static_files = if is_tar {
+                                let src_file = std::fs::File::open(&snapshot_src)?;
+                                let decoder = ZstdDecoder::new(src_file)?;
+                                let mut archive = TarArchive::new(decoder);
+                                archive.unpack(&restore_tmp_dir)?;
+                                true
+                            } else {
                                 let _ = std::fs::remove_dir_all(&restore_tmp_dir);
                                 std::fs::create_dir_all(&restore_tmp_dir)?;
                                 std::fs::create_dir_all(&restored_db_dir)?;
@@ -765,7 +828,8 @@ where
                                         "restored db is empty",
                                     ))
                                 }
-                            }
+                                false
+                            };
 
                             let restored_db_len =
                                 restored_db_file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -805,15 +869,36 @@ where
                                 0
                             };
 
-                            let _ = std::fs::remove_dir_all(&db_dir_for_restore);
+                            if db_dir_for_restore.exists() {
+                                let _ = std::fs::remove_dir_all(&db_dir_for_restore);
+                            }
                             std::fs::rename(&restored_db_dir, &db_dir_for_restore)?;
 
                             if unpacked_static_files {
-                                let _ = std::fs::remove_dir_all(&static_files_dir_for_restore);
+                                if static_files_dir_for_restore.exists() {
+                                    let _ = std::fs::remove_dir_all(&static_files_dir_for_restore);
+                                }
                                 std::fs::rename(
                                     &restored_static_files_dir,
                                     &static_files_dir_for_restore,
                                 )?;
+                            }
+
+                            for dir_name in [
+                                "blobstore",
+                                "invalid_block_hooks",
+                                "rocksdb",
+                                "txpool_transactions",
+                                "exex_wal",
+                            ] {
+                                let restored = restore_tmp_dir.join(dir_name);
+                                if restored.exists() {
+                                    let dest = chain_dir.join(dir_name);
+                                    if dest.exists() {
+                                        let _ = std::fs::remove_dir_all(&dest);
+                                    }
+                                    std::fs::rename(&restored, &dest)?;
+                                }
                             }
 
                             let _ = std::fs::remove_dir_all(&restore_tmp_dir);
@@ -882,32 +967,8 @@ where
         let database_for_snapshot = database.clone();
         let snapshot_backup_has_run = Arc::new(AtomicBool::new(false));
 
-        if snapshot.snapshot_enabled {
-            if let Some(snapshot_path_zst_for_task) = snapshot_path_zst.clone() {
-                let database_for_snapshot = database_for_snapshot.clone();
-                let db_path_for_task = db_path.clone();
-                let static_files_path_for_task = static_files_path.clone();
-                let snapshots_zst_base_dir_for_task = snapshots_zst_base_dir.clone();
-                let snapshot_backup_has_run = snapshot_backup_has_run.clone();
-
-                ctx.task_executor.spawn_critical_with_graceful_shutdown_signal(
-                    "mdbx snapshot backup task",
-                    move |shutdown| async move {
-                        let _guard = shutdown.await;
-                        maybe_run_snapshot_backup(
-                            snapshot_backup_has_run,
-                            database_for_snapshot,
-                            db_path_for_task,
-                            static_files_path_for_task,
-                            snapshot_path_zst_for_task,
-                            snapshots_zst_base_dir_for_task,
-                        )
-                        .await;
-                        drop(_guard);
-                    },
-                );
-            }
-        }
+        // Note: snapshot backup is executed after the node stops (see below), to ensure all
+        // in-memory canonical blocks have been persisted before snapshotting.
         let builder = NodeBuilder::new(node_config)
             .with_database(database)
             .with_launch_context(ctx.task_executor);

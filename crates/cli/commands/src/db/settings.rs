@@ -100,19 +100,19 @@ impl Command {
         match cmd {
             SetCommand::ReceiptsInStaticFiles { value } => {
                 if settings.receipts_in_static_files == value {
-                    println!("receipts_in_static_files is already set to {}", value);
+                    println!("receipts_in_static_files is already set to {value}");
                     return Ok(());
                 }
                 settings.receipts_in_static_files = value;
-                println!("Set receipts_in_static_files = {}", value);
+                println!("Set receipts_in_static_files = {value}");
             }
             SetCommand::TransactionSendersInStaticFiles { value } => {
                 if settings.transaction_senders_in_static_files == value {
-                    println!("transaction_senders_in_static_files is already set to {}", value);
+                    println!("transaction_senders_in_static_files is already set to {value}");
                     return Ok(());
                 }
                 settings.transaction_senders_in_static_files = value;
-                println!("Set transaction_senders_in_static_files = {}", value);
+                println!("Set transaction_senders_in_static_files = {value}");
             }
         }
 

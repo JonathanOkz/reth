@@ -304,6 +304,7 @@ impl EngineNodeLauncher {
             let mut shutdown = shutdown.fuse();
             let mut shutdown_guard = None;
             let mut terminate_done_rx: Option<oneshot::Receiver<()>> = None;
+            let mut engine_service_ended = false;
 
             // advance the chain and await payloads built locally to add into the engine api
             // tree handler to prevent re-execution if that block is received as payload from
@@ -342,14 +343,31 @@ impl EngineNodeLauncher {
                         break
                     }
                     payload = built_payloads.next() => {
-                        let Some(payload) = payload else { break };
+                        let Some(payload) = payload else {
+                            // If we're terminating, keep the engine loop alive until termination
+                            // completes.
+                            if terminate_done_rx.is_some() {
+                                continue
+                            }
+                            break
+                        };
                         if let Some(executed_block) = payload.executed_block() {
                             debug!(target: "reth::cli", block=?executed_block.recovered_block.num_hash(),  "inserting built payload");
                             engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block.into_executed_payload()).into());
                         }
                     }
-                    event = engine_service.next() => {
-                        let Some(event) = event else { break };
+                    event = engine_service.next(), if !engine_service_ended => {
+                        let Some(event) = event else {
+                            // If we're already terminating, the engine service stream might end
+                            // before the terminate completion signal resolves. In that case we
+                            // must keep running until termination is complete to guarantee that
+                            // remaining in-memory canonical blocks are persisted.
+                            engine_service_ended = true;
+                            if terminate_done_rx.is_some() {
+                                continue
+                            }
+                            break
+                        };
                         debug!(target: "reth::cli", "Event: {event}");
                         match event {
                             ChainEvent::BackfillSyncFinished => {

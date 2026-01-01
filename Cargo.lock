@@ -7779,6 +7779,7 @@ dependencies = [
  "reth-prune",
  "reth-prune-types",
  "reth-revm",
+ "reth-snapshotter",
  "reth-stages",
  "reth-stages-types",
  "reth-static-file",
@@ -10630,6 +10631,15 @@ dependencies = [
  "reth-network-api",
  "serde",
  "strum 0.27.2",
+]
+
+[[package]]
+name = "reth-snapshotter"
+version = "0.1.0"
+source = "git+https://github.com/BaaS-sh/reth-snapshotter.git?rev=c83165b2d20d1fd7cd0885e3e8d0696df140941b#c83165b2d20d1fd7cd0885e3e8d0696df140941b"
+dependencies = [
+ "tar",
+ "zstd",
 ]
 
 [[package]]

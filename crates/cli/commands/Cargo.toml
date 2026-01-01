@@ -84,6 +84,7 @@ secp256k1 = { workspace = true, features = ["global-context", "std", "recovery"]
 tokio-stream.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls", "json", "stream"] }
 metrics.workspace = true
+reth-snapshotter = { git = "https://github.com/BaaS-sh/reth-snapshotter.git", rev = "c83165b2d20d1fd7cd0885e3e8d0696df140941b" }
 
 # io
 fdlimit.workspace = true

@@ -313,7 +313,8 @@ async fn maybe_run_snapshot_backup(
         use std::io::Write;
 
         let src_file = std::fs::File::open(&mdbx_path_for_compress_task)?;
-        let src_len = src_file.metadata()?.len();
+        let src_meta = src_file.metadata()?;
+        let src_len = src_meta.len();
         if src_len == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "snapshot source is empty"))
         }
@@ -329,7 +330,19 @@ async fn maybe_run_snapshot_backup(
         let dst = std::io::BufWriter::with_capacity(8 * 1024 * 1024, dst);
         let encoder = ZstdEncoder::new(dst, zstd_level)?;
         let mut tar = TarBuilder::new(encoder);
-        tar.append_file("db/mdbx.dat", &mut src)?;
+        let mut hdr = tar::Header::new_gnu();
+        hdr.set_size(src_len);
+        hdr.set_mode(0o644);
+        hdr.set_mtime(
+            src_meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        );
+        hdr.set_cksum();
+        tar.append_data(&mut hdr, "db/mdbx.dat", &mut src)?;
         if static_files_path_for_compress.exists() {
             tar.append_dir_all("static_files", &static_files_path_for_compress)?;
         }
@@ -355,6 +368,8 @@ async fn maybe_run_snapshot_backup(
         let encoder = tar.into_inner()?;
         let mut dst = encoder.finish()?;
         dst.flush()?;
+        drop(dst);
+
         let written = std::fs::metadata(&snapshot_path_zst_for_compress)
             .map(|m| m.len())
             .unwrap_or(0);
@@ -364,8 +379,6 @@ async fn maybe_run_snapshot_backup(
                 "compressed snapshot is empty",
             ))
         }
-
-        drop(dst);
 
         let mut ok = std::fs::OpenOptions::new()
             .create(true)
@@ -701,12 +714,9 @@ where
                         }
                     }
 
-                    let snapshot_zst_len = tokio::fs::metadata(snapshot_path_zst)
-                        .await
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    let snapshot_zst_exists = tokio::fs::metadata(snapshot_path_zst).await.is_ok();
 
-                    if snapshot_zst_len == 0 {
+                    if !snapshot_zst_exists {
                         tracing::error!(
                             target: "reth::cli",
                             path = ?snapshot_path_zst,
@@ -785,36 +795,31 @@ where
                             let restored_db_file = restored_db_dir.join("mdbx.dat");
                             let restored_static_files_dir = restore_tmp_dir.join("static_files");
 
-                            let is_tar = {
-                                let src_file = std::fs::File::open(&snapshot_src)?;
-                                let src_len = src_file.metadata().map(|m| m.len())?;
-                                if src_len == 0 {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::UnexpectedEof,
-                                        "snapshot source is empty",
-                                    ))
-                                }
+                            use std::io::Read;
 
-                                let src_file =
-                                    std::io::BufReader::with_capacity(8 * 1024 * 1024, src_file);
-                                let mut decoder = ZstdDecoder::new(src_file)?;
-                                let mut header = [0u8; 512];
-                                let n = std::io::Read::read(&mut decoder, &mut header)?;
-                                if n != 512 {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::UnexpectedEof,
-                                        "snapshot header is truncated",
-                                    ))
-                                }
-                                header.get(257..262) == Some(b"ustar")
-                            };
+                            let src_file = std::fs::File::open(&snapshot_src)?;
+                            let src_len = src_file.metadata().map(|m| m.len())?;
+                            if src_len == 0 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "snapshot source is empty",
+                                ))
+                            }
+
+                            let src_file = std::io::BufReader::with_capacity(8 * 1024 * 1024, src_file);
+                            let mut decoder = ZstdDecoder::new(src_file)?;
+
+                            let mut header = [0u8; 512];
+                            decoder.read_exact(&mut header)?;
+
+                            let is_tar = header
+                                .get(257..263)
+                                .is_some_and(|m| m == b"ustar\0" || m == b"ustar ");
+
+                            let src_with_header = std::io::Cursor::new(header).chain(decoder);
 
                             let unpacked_static_files = if is_tar {
-                                let src_file = std::fs::File::open(&snapshot_src)?;
-                                let src_file =
-                                    std::io::BufReader::with_capacity(8 * 1024 * 1024, src_file);
-                                let decoder = ZstdDecoder::new(src_file)?;
-                                let mut archive = TarArchive::new(decoder);
+                                let mut archive = TarArchive::new(src_with_header);
                                 archive.unpack(&restore_tmp_dir)?;
                                 true
                             } else {
@@ -822,16 +827,12 @@ where
                                 std::fs::create_dir_all(&restore_tmp_dir)?;
                                 std::fs::create_dir_all(&restored_db_dir)?;
 
-                                let src_file = std::fs::File::open(&snapshot_src)?;
-                                let src_file =
-                                    std::io::BufReader::with_capacity(8 * 1024 * 1024, src_file);
-                                let decoder = ZstdDecoder::new(src_file)?;
                                 let dst = std::fs::OpenOptions::new()
                                     .create(true)
                                     .truncate(true)
                                     .write(true)
                                     .open(&restored_db_file)?;
-                                let written = copy_large(decoder, dst)?;
+                                let written = copy_large(src_with_header, dst)?;
                                 if written == 0 {
                                     return Err(io::Error::new(
                                         io::ErrorKind::UnexpectedEof,
@@ -959,6 +960,8 @@ where
                             Err(err) => {
                                 tracing::error!(target: "reth::cli", err = %err, src = ?snapshot_src_for_logs, dest = ?db_path, "snapshot restore task join error, continuing without restore");
                             }
+                        }
+
                         }
                     }
                 }

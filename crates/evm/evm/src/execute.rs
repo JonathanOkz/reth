@@ -363,6 +363,23 @@ pub trait BlockBuilder {
         state_root_precomputed: Option<(B256, TrieUpdates)>,
     ) -> Result<BlockBuilderOutcome<Self::Primitives>, BlockExecutionError>;
 
+    /// Completes block execution, then lets the caller provide an optional precomputed state root.
+    ///
+    /// This is useful for state-root pipelines that must observe post-execution state changes emitted
+    /// by [`BlockExecutor::finish`] before their final root is consumed.
+    fn finish_with_state_root_provider<F>(
+        self,
+        state_provider: impl StateProvider,
+        state_root_provider: F,
+    ) -> Result<BlockBuilderOutcome<Self::Primitives>, BlockExecutionError>
+    where
+        Self: Sized,
+        F: FnOnce(&HashedPostState) -> Result<Option<(B256, TrieUpdates)>, BlockExecutionError>,
+    {
+        let _ = state_root_provider;
+        self.finish(state_provider, None)
+    }
+
     /// Provides mutable access to the inner [`BlockExecutor`].
     fn executor_mut(&mut self) -> &mut Self::Executor;
 
@@ -477,6 +494,18 @@ where
         state: impl StateProvider,
         state_root_precomputed: Option<(B256, TrieUpdates)>,
     ) -> Result<BlockBuilderOutcome<N>, BlockExecutionError> {
+        self.finish_with_state_root_provider(state, move |_| Ok(state_root_precomputed))
+    }
+
+    fn finish_with_state_root_provider<RootProvider>(
+        self,
+        state: impl StateProvider,
+        state_root_provider: RootProvider,
+    ) -> Result<BlockBuilderOutcome<N>, BlockExecutionError>
+    where
+        RootProvider:
+            FnOnce(&HashedPostState) -> Result<Option<(B256, TrieUpdates)>, BlockExecutionError>,
+    {
         let (evm, result) = self.executor.finish()?;
         let (db, evm_env) = evm.finish();
 
@@ -484,7 +513,7 @@ where
         db.merge_transitions(BundleRetention::Reverts);
 
         let hashed_state = state.hashed_post_state(&db.bundle_state);
-        let (state_root, trie_updates) = match state_root_precomputed {
+        let (state_root, trie_updates) = match state_root_provider(&hashed_state)? {
             Some(precomputed) => precomputed,
             None => state
                 .state_root_with_updates(hashed_state.clone())

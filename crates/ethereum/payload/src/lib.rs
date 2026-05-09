@@ -448,26 +448,21 @@ where
 
     let BlockBuilderOutcome { execution_result, block, .. } = if let Some(mut handle) = trie_handle
     {
-        // Drop the state hook, which drops the StateHookSender and triggers
-        // FinishedStateUpdates via its Drop impl, signaling the trie task to finalize.
-        builder.executor_mut().set_state_hook(None);
-
-        // The sparse trie has been computing incrementally alongside tx execution.
-        // This recv() waits for the final root hash — most work is already done.
-        // Fall back to sync state root if the trie pipeline fails.
-        match handle.state_root() {
-            Ok(outcome) => {
-                debug!(target: "payload_builder", id=%payload_id, state_root=?outcome.state_root, "received state root from sparse trie");
-                builder.finish(
-                    state_provider.as_ref(),
-                    Some((outcome.state_root, Arc::unwrap_or_clone(outcome.trie_updates))),
-                )?
+        // Keep the state hook installed through builder.finish(). The executor applies post-block
+        // balance increments and system-call changes during finish(), and those updates must be
+        // streamed into the sparse trie before its root is consumed.
+        builder.finish_with_state_root_provider(state_provider.as_ref(), move |_| {
+            match handle.state_root() {
+                Ok(outcome) => {
+                    debug!(target: "payload_builder", id=%payload_id, state_root=?outcome.state_root, "received state root from sparse trie");
+                    Ok(Some((outcome.state_root, Arc::unwrap_or_clone(outcome.trie_updates))))
+                }
+                Err(err) => {
+                    warn!(target: "payload_builder", id=%payload_id, %err, "sparse trie failed, falling back to sync state root");
+                    Ok(None)
+                }
             }
-            Err(err) => {
-                warn!(target: "payload_builder", id=%payload_id, %err, "sparse trie failed, falling back to sync state root");
-                builder.finish(state_provider.as_ref(), None)?
-            }
-        }
+        })?
     } else {
         builder.finish(state_provider.as_ref(), None)?
     };

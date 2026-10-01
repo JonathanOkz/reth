@@ -19,10 +19,11 @@ use reth_node_api::BlockTy;
 use reth_node_events::node::NodeEvent;
 use reth_provider::{
     providers::ProviderNodeTypes, BlockBodyIndicesProvider, BlockNumReader, HeaderProvider,
-    ProviderError, ProviderFactory, StageCheckpointReader,
+    ProviderError, ProviderFactory, StageCheckpointReader, StageCheckpointWriter,
 };
 use reth_prune::{PruneMode, PruneModes};
 use reth_stages::{prelude::*, ControlFlow, Pipeline, StageId, StageSet};
+use reth_stages_types::StageCheckpoint;
 use reth_static_file::StaticFileProducer;
 use std::{path::Path, sync::Arc};
 use tokio::sync::watch;
@@ -222,6 +223,19 @@ where
             .sealed_header(provider_factory.last_block_number()?)?
             .expect("should have genesis");
     }
+
+    let tip = provider_factory.last_block_number()?;
+    let provider_rw = provider_factory.provider_rw()?;
+    for (stage, mode) in [
+        (StageId::TransactionLookup, prune_modes.transaction_lookup),
+        (StageId::IndexStorageHistory, prune_modes.storage_history),
+        (StageId::IndexAccountHistory, prune_modes.account_history),
+    ] {
+        if mode == Some(PruneMode::Full) {
+            provider_rw.save_stage_checkpoint(stage, StageCheckpoint::new(tip))?;
+        }
+    }
+    provider_rw.commit()?;
 
     let provider = provider_factory.provider()?;
     let total_imported_blocks = provider.tx_ref().entries::<tables::HeaderNumbers>()? - init_blocks;

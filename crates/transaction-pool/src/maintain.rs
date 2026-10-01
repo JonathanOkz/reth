@@ -80,6 +80,25 @@ impl Default for MaintainPoolConfig {
     }
 }
 
+/// Converts a canonical stream item into an event understood by pool maintenance.
+#[doc(hidden)]
+pub trait IntoPoolMaintenanceEvent<N: NodePrimitives> {
+    /// Returns the notification, or the number of notifications skipped by a lagging receiver.
+    fn into_pool_maintenance_event(self) -> Result<CanonStateNotification<N>, u64>;
+}
+
+impl<N: NodePrimitives> IntoPoolMaintenanceEvent<N> for CanonStateNotification<N> {
+    fn into_pool_maintenance_event(self) -> Result<Self, u64> {
+        Ok(self)
+    }
+}
+
+impl<N: NodePrimitives> IntoPoolMaintenanceEvent<N> for Result<CanonStateNotification<N>, u64> {
+    fn into_pool_maintenance_event(self) -> Self {
+        self
+    }
+}
+
 /// Settings for local transaction backup task
 #[derive(Debug, Clone, Default)]
 pub struct LocalTransactionBackupConfig {
@@ -111,7 +130,8 @@ where
         + 'static,
     P: TransactionPoolExt<Transaction: PoolTransaction<Consensus = N::SignedTx>, Block = N::Block>
         + 'static,
-    St: Stream<Item = CanonStateNotification<N>> + Send + Unpin + 'static,
+    St: Stream + Send + Unpin + 'static,
+    St::Item: IntoPoolMaintenanceEvent<N>,
 {
     async move {
         maintain_transaction_pool(client, pool, events, task_spawner, config).await;
@@ -137,26 +157,13 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
         + 'static,
     P: TransactionPoolExt<Transaction: PoolTransaction<Consensus = N::SignedTx>, Block = N::Block>
         + 'static,
-    St: Stream<Item = CanonStateNotification<N>> + Send + Unpin + 'static,
+    St: Stream + Send + Unpin + 'static,
+    St::Item: IntoPoolMaintenanceEvent<N>,
 {
     let metrics = MaintainPoolMetrics::default();
     let MaintainPoolConfig { max_update_depth, max_reload_accounts, .. } = config;
     // ensure the pool points to latest state
-    if let Ok(Some(latest)) = client.header_by_number_or_tag(BlockNumberOrTag::Latest) {
-        let latest = SealedHeader::seal_slow(latest);
-        let chain_spec = client.chain_spec();
-        let info = BlockInfo {
-            block_gas_limit: latest.gas_limit(),
-            last_seen_block_hash: latest.hash(),
-            last_seen_block_number: latest.number(),
-            pending_basefee: chain_spec
-                .next_block_base_fee(latest.header(), latest.timestamp())
-                .unwrap_or_default(),
-            pending_blob_fee: latest
-                .maybe_next_block_blob_fee(chain_spec.blob_params_at_timestamp(latest.timestamp())),
-        };
-        pool.set_block_info(info);
-    }
+    let _ = sync_pool_block_info::<N, _, _>(&client, &pool);
 
     // keeps track of mined blob transaction so we can clean finalized transactions
     let mut blob_store_tracker = BlobStoreCanonTracker::default();
@@ -258,11 +265,26 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
                 reloaded = Some(res);
             }
             ev = events.next() =>  {
-                 if ev.is_none() {
+                let Some(ev) = ev else {
                     // the stream ended, we are done
                     break;
-                }
-                event = ev;
+                };
+                let notification = match ev.into_pool_maintenance_event() {
+                    Ok(notification) => notification,
+                    Err(skipped) => {
+                        warn!(target: "txpool", skipped, "canonical state notifications lagged; resyncing pool");
+                        match sync_pool_block_info::<N, _, _>(&client, &pool) {
+                            Ok(true) => {
+                                maintained_state = MaintainedPoolState::Drifted;
+                                first_event = false;
+                            }
+                            Ok(false) => warn!(target: "txpool", "latest canonical header unavailable during pool resync"),
+                            Err(err) => warn!(target: "txpool", %err, "failed to resync pool to latest canonical header"),
+                        }
+                        continue
+                    }
+                };
+                event = Some(notification);
                 // on receiving the first event on start up, mark the pool as drifted to explicitly
                 // trigger revalidation and clear out outdated txs.
                 if first_event {
@@ -591,6 +613,31 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
     }
 }
 
+fn sync_pool_block_info<N, Client, P>(client: &Client, pool: &P) -> Result<bool, ProviderError>
+where
+    N: NodePrimitives,
+    Client: BlockReaderIdExt<Header = N::BlockHeader>
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = N::BlockHeader>>,
+    P: TransactionPoolExt<Block = N::Block>,
+{
+    let Some(latest) = client.header_by_number_or_tag(BlockNumberOrTag::Latest)? else {
+        return Ok(false)
+    };
+    let latest = SealedHeader::seal_slow(latest);
+    let chain_spec = client.chain_spec();
+    pool.set_block_info(BlockInfo {
+        block_gas_limit: latest.gas_limit(),
+        last_seen_block_hash: latest.hash(),
+        last_seen_block_number: latest.number(),
+        pending_basefee: chain_spec
+            .next_block_base_fee(latest.header(), latest.timestamp())
+            .unwrap_or_default(),
+        pending_blob_fee: latest
+            .maybe_next_block_blob_fee(chain_spec.blob_params_at_timestamp(latest.timestamp())),
+    });
+    Ok(true)
+}
+
 struct FinalizedBlockTracker {
     last_finalized_block: Option<BlockNumber>,
 }
@@ -853,12 +900,14 @@ pub async fn backup_local_transactions_task<P>(
 mod tests {
     use super::*;
     use crate::{
-        blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
+        blobstore::InMemoryBlobStore,
+        test_utils::{MockTransaction, TestPool, TestPoolBuilder},
+        validate::EthTransactionValidatorBuilder,
         CoinbaseTipOrdering, EthPooledTransaction, Pool, TransactionOrigin,
     };
     use alloy_eips::eip2718::Decodable2718;
     use alloy_primitives::{hex, U256};
-    use reth_ethereum_primitives::PooledTransactionVariant;
+    use reth_ethereum_primitives::{EthPrimitives, PooledTransactionVariant};
     use reth_evm_ethereum::EthEvmConfig;
     use reth_fs_util as fs;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
@@ -870,6 +919,39 @@ mod tests {
         let mut copy = changed_acc.0;
         copy.nonce = 10;
         assert!(changed_acc.eq(&ChangedAccountEntry(copy)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lagged_notifications_resync_queued_transactions() {
+        let provider = MockEthProvider::default().with_genesis_block();
+        let sender = Address::random();
+        provider.add_account(sender, ExtendedAccount::new(7, U256::MAX));
+
+        let pool: TestPool = TestPoolBuilder::default().into();
+        let transaction = MockTransaction::eip1559().with_sender(sender).with_nonce(7);
+        pool.add_transaction(TransactionOrigin::External, transaction).await.unwrap();
+        assert_eq!(pool.queued_transactions().len(), 1);
+
+        let (events_tx, events_rx) = futures::channel::mpsc::unbounded();
+        let maintenance = tokio::spawn(maintain_transaction_pool::<EthPrimitives, _, _, _>(
+            provider,
+            pool.clone(),
+            events_rx,
+            Runtime::test(),
+            MaintainPoolConfig::default(),
+        ));
+
+        events_tx.unbounded_send(Err(256)).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while pool.pending_transactions().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("lag recovery should promote the queued transaction");
+
+        assert!(pool.queued_transactions().is_empty());
+        maintenance.abort();
     }
 
     const EXTENSION: &str = "json";

@@ -22,7 +22,7 @@ use reth_provider::{
     ProviderError, ProviderFactory, StageCheckpointReader, StageCheckpointWriter,
 };
 use reth_prune::{PruneMode, PruneModes};
-use reth_stages::{prelude::*, ControlFlow, Pipeline, StageId, StageSet};
+use reth_stages::{prelude::*, stages::PruneStage, ControlFlow, Pipeline, StageId, StageSet};
 use reth_stages_types::StageCheckpoint;
 use reth_static_file::StaticFileProducer;
 use std::{path::Path, sync::Arc};
@@ -43,6 +43,8 @@ pub struct ImportConfig {
     ///
     /// This lets callers avoid materializing historical indexes that will not be retained.
     pub prune_modes: PruneModes,
+    /// Defers state hashing and pruning until every input chunk has been executed.
+    pub defer_state_finalization: bool,
 }
 
 /// Result of an import operation.
@@ -97,6 +99,10 @@ pub async fn import_blocks_from_file<N>(
 where
     N: ProviderNodeTypes,
 {
+    eyre::ensure!(
+        !(import_config.no_state && import_config.defer_state_finalization),
+        "state finalization requires state execution"
+    );
     if import_config.no_state {
         info!(target: "reth::import", "Disabled stages requiring state");
     }
@@ -158,6 +164,7 @@ where
             static_file_producer.clone(),
             prune_modes.clone(),
             import_config.no_state,
+            import_config.defer_state_finalization,
             executor.clone(),
             runtime.clone(),
         )?;
@@ -222,6 +229,17 @@ where
         sealed_header = provider_factory
             .sealed_header(provider_factory.last_block_number()?)?
             .expect("should have genesis");
+    }
+
+    if import_config.defer_state_finalization {
+        let tip = provider_factory.last_block_number()?;
+        let mut pipeline = Pipeline::builder()
+            .with_max_block(tip)
+            .with_fail_on_unwind(true)
+            .add_stages(HashingStages::default())
+            .add_stage(PruneStage::new(prune_modes.clone(), config.stages.prune.commit_threshold))
+            .build(provider_factory.clone(), static_file_producer.clone());
+        pipeline.run().await?;
     }
 
     let tip = provider_factory.last_block_number()?;
@@ -295,6 +313,7 @@ pub fn build_import_pipeline_impl<N, C, E>(
     static_file_producer: StaticFileProducer<ProviderFactory<N>>,
     prune_modes: PruneModes,
     disable_exec: bool,
+    defer_state_finalization: bool,
     evm_config: E,
     runtime: reth_tasks::Runtime,
 ) -> eyre::Result<(Pipeline<N>, impl futures::Stream<Item = NodeEvent<N::Primitives>> + use<N, C, E>)>
@@ -363,6 +382,11 @@ where
             .disable_if(StageId::IndexAccountHistory, || {
                 prune_modes.account_history == Some(PruneMode::Full)
             })
+            .disable_if(StageId::MerkleUnwind, || defer_state_finalization)
+            .disable_if(StageId::AccountHashing, || defer_state_finalization)
+            .disable_if(StageId::StorageHashing, || defer_state_finalization)
+            .disable_if(StageId::MerkleExecute, || defer_state_finalization)
+            .disable_if(StageId::Prune, || defer_state_finalization)
             .disable_all_if(&StageId::STATE_REQUIRED, || disable_exec),
         )
         .build(provider_factory, static_file_producer);

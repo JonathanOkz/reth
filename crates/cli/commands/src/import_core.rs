@@ -18,13 +18,12 @@ use reth_network_p2p::{
 use reth_node_api::BlockTy;
 use reth_node_events::node::NodeEvent;
 use reth_provider::{
-    providers::ProviderNodeTypes, BlockNumReader, HeaderProvider, ProviderError, ProviderFactory,
-    RocksDBProviderFactory, StageCheckpointReader,
+    providers::ProviderNodeTypes, BlockBodyIndicesProvider, BlockNumReader, HeaderProvider,
+    ProviderError, ProviderFactory, StageCheckpointReader,
 };
-use reth_prune::PruneModes;
+use reth_prune::{PruneMode, PruneModes};
 use reth_stages::{prelude::*, ControlFlow, Pipeline, StageId, StageSet};
 use reth_static_file::StaticFileProducer;
-use reth_storage_api::StorageSettingsCache;
 use std::{path::Path, sync::Arc};
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
@@ -39,6 +38,10 @@ pub struct ImportConfig {
     /// If true, fail immediately when an invalid block is encountered.
     /// By default (false), the import stops at the last valid block and exits successfully.
     pub fail_on_invalid_block: bool,
+    /// Pruning applied while importing.
+    ///
+    /// This lets callers avoid materializing historical indexes that will not be retained.
+    pub prune_modes: PruneModes,
 }
 
 /// Result of an import operation.
@@ -107,13 +110,14 @@ where
     // open file
     let mut reader = ChunkedFileReader::new(path, import_config.chunk_len).await?;
 
+    let prune_modes = import_config.prune_modes.clone();
+    let provider_factory = provider_factory.with_prune_modes(prune_modes.clone());
     let provider = provider_factory.provider()?;
     let init_blocks = provider.tx_ref().entries::<tables::HeaderNumbers>()?;
-    let init_txns = if provider_factory.cached_storage_settings().storage_v2 {
-        provider_factory.rocksdb_provider().iter::<tables::TransactionHashNumbers>()?.count()
-    } else {
-        provider.tx_ref().entries::<tables::TransactionHashNumbers>()?
-    };
+    let init_txns = provider
+        .block_body_indices(provider_factory.last_block_number()?)?
+        .map(|indices| indices.next_tx_num() as usize)
+        .unwrap_or_default();
     drop(provider);
 
     let mut total_decoded_blocks = 0;
@@ -124,7 +128,7 @@ where
         .expect("should have genesis");
 
     let static_file_producer =
-        StaticFileProducer::new(provider_factory.clone(), PruneModes::default());
+        StaticFileProducer::new(provider_factory.clone(), prune_modes.clone());
 
     // Track if we stopped due to an invalid block
     let mut stopped_on_invalid_block = false;
@@ -151,6 +155,7 @@ where
             &consensus,
             Arc::new(file_client),
             static_file_producer.clone(),
+            prune_modes.clone(),
             import_config.no_state,
             executor.clone(),
             runtime.clone(),
@@ -220,11 +225,10 @@ where
 
     let provider = provider_factory.provider()?;
     let total_imported_blocks = provider.tx_ref().entries::<tables::HeaderNumbers>()? - init_blocks;
-    let current_txns = if provider_factory.cached_storage_settings().storage_v2 {
-        provider_factory.rocksdb_provider().iter::<tables::TransactionHashNumbers>()?.count()
-    } else {
-        provider.tx_ref().entries::<tables::TransactionHashNumbers>()?
-    };
+    let current_txns = provider
+        .block_body_indices(provider_factory.last_block_number()?)?
+        .map(|indices| indices.next_tx_num() as usize)
+        .unwrap_or_default();
     let total_imported_txns = current_txns - init_txns;
 
     let result = ImportResult {
@@ -275,6 +279,7 @@ pub fn build_import_pipeline_impl<N, C, E>(
     consensus: &Arc<C>,
     file_client: Arc<FileClient<BlockTy<N>>>,
     static_file_producer: StaticFileProducer<ProviderFactory<N>>,
+    prune_modes: PruneModes,
     disable_exec: bool,
     evm_config: E,
     runtime: reth_tasks::Runtime,
@@ -329,10 +334,21 @@ where
                 body_downloader,
                 evm_config,
                 config.stages.clone(),
-                PruneModes::default(),
+                prune_modes.clone(),
                 None,
             )
             .builder()
+            // Import callers that fully prune historical indexes do not need to build them only
+            // for the prune stage to delete them immediately afterwards.
+            .disable_if(StageId::TransactionLookup, || {
+                prune_modes.transaction_lookup == Some(PruneMode::Full)
+            })
+            .disable_if(StageId::IndexStorageHistory, || {
+                prune_modes.storage_history == Some(PruneMode::Full)
+            })
+            .disable_if(StageId::IndexAccountHistory, || {
+                prune_modes.account_history == Some(PruneMode::Full)
+            })
             .disable_all_if(&StageId::STATE_REQUIRED, || disable_exec),
         )
         .build(provider_factory, static_file_producer);

@@ -66,6 +66,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> ImportComm
             no_state: self.no_state,
             chunk_len: self.chunk_len,
             fail_on_invalid_block: self.fail_on_invalid_block,
+            ..Default::default()
         };
 
         let executor = components.evm_config().clone();

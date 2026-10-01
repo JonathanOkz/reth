@@ -11,6 +11,10 @@ use reth_transaction_pool::{
     TransactionValidator,
 };
 use std::future::Future;
+use tokio_stream::{
+    wrappers::{errors::BroadcastStreamRecvError, BroadcastStream},
+    StreamExt,
+};
 
 /// A type that knows how to build the transaction pool.
 pub trait PoolBuilder<Node: FullNodeTypes, Evm>: Send {
@@ -275,7 +279,8 @@ where
     Pool: reth_transaction_pool::TransactionPoolExt<Block = BlockTy<Node::Types>> + Clone + 'static,
     Pool::Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>,
 {
-    let chain_events = ctx.provider().canonical_state_stream();
+    let chain_events = BroadcastStream::new(ctx.provider().subscribe_to_canonical_state())
+        .map(|event| event.map_err(|BroadcastStreamRecvError::Lagged(skipped)| skipped));
     let client = ctx.provider().clone();
 
     ctx.task_executor().spawn_critical_task(

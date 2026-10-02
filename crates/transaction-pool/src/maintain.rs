@@ -6,7 +6,7 @@ use crate::{
     metrics::MaintainPoolMetrics,
     traits::{CanonicalStateUpdate, EthPoolTransaction, TransactionPool, TransactionPoolExt},
     AllPoolTransactions, BlobTransactionSidecarVariant, BlockInfo, PoolTransaction, PoolUpdateKind,
-    TransactionOrigin,
+    SubPool, TransactionListenerKind, TransactionOrigin,
 };
 use alloy_consensus::{transaction::TxHashRef, BlockHeader, Typed2718};
 use alloy_eips::{BlockNumberOrTag, Decodable2718, Encodable2718};
@@ -181,6 +181,12 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
     // the future that reloads accounts from state
     let mut reload_accounts_fut = Fuse::terminated();
 
+    // A transaction can be classified with sender state read just before the canonical update that
+    // makes it executable. Reload only that sender so the transaction cannot remain queued until
+    // an unrelated block changes the account again.
+    let mut new_transactions =
+        pool.new_transactions_listener_for(TransactionListenerKind::All);
+
     // eviction interval for stale non local txs
     let mut stale_eviction_interval = time::interval(config.max_tx_lifetime);
 
@@ -263,6 +269,11 @@ pub async fn maintain_transaction_pool<N, Client, P, St>(
         tokio::select! {
             res = &mut reload_accounts_fut =>  {
                 reloaded = Some(res);
+            }
+            Some(transaction) = new_transactions.recv() => {
+                if transaction.subpool == SubPool::Queued {
+                    dirty_addresses.insert(transaction.transaction.sender());
+                }
             }
             ev = events.next() =>  {
                 let Some(ev) = ev else {
@@ -949,6 +960,41 @@ mod tests {
         })
         .await
         .expect("lag recovery should promote the queued transaction");
+
+        assert!(pool.queued_transactions().is_empty());
+        maintenance.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn newly_queued_transaction_reloads_its_sender() {
+        let provider = MockEthProvider::default().with_genesis_block();
+        let sender = Address::random();
+        provider.add_account(sender, ExtendedAccount::new(7, U256::MAX));
+
+        let pool: TestPool = TestPoolBuilder::default().into();
+        let (_events_tx, events_rx) = futures::channel::mpsc::unbounded::<
+            Result<CanonStateNotification<EthPrimitives>, u64>,
+        >();
+        let maintenance = tokio::spawn(maintain_transaction_pool::<EthPrimitives, _, _, _>(
+            provider,
+            pool.clone(),
+            events_rx,
+            Runtime::test(),
+            MaintainPoolConfig::default(),
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let transaction = MockTransaction::eip1559().with_sender(sender).with_nonce(7);
+        pool.add_transaction(TransactionOrigin::External, transaction).await.unwrap();
+        assert_eq!(pool.queued_transactions().len(), 1);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while pool.pending_transactions().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the queued transaction sender should be reloaded");
 
         assert!(pool.queued_transactions().is_empty());
         maintenance.abort();

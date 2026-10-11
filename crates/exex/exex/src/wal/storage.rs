@@ -1,5 +1,6 @@
 use std::{
     fs::File,
+    io::{BufWriter, Write},
     ops::RangeInclusive,
     path::{Path, PathBuf},
 };
@@ -168,7 +169,12 @@ where
             reth_exex_types::serde_bincode_compat::ExExNotification::<N>::from(notification);
 
         reth_fs_util::atomic_write_file(&file_path, |file| {
-            rmp_serde::encode::write(file, &notification)
+            let mut writer = BufWriter::new(file);
+            rmp_serde::encode::write(&mut writer, &notification)?;
+            // a `BufWriter` dropped without an explicit flush discards write errors, and
+            // `atomic_write_file` fsyncs as soon as this returns
+            writer.flush()?;
+            Ok::<_, Box<dyn core::error::Error + Send + Sync>>(())
         })?;
 
         Ok(file_path.metadata().map_err(|err| WalError::FileMetadata(file_id, err))?.len())
